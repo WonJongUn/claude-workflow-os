@@ -39,3 +39,13 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+.app-settings.json
+
+# 사용자별 데이터 — 절대 경로/도메인 정보가 들어 있어 커밋 금지.
+# 예시 골격은 tickets/.example.json으로 별도 트래킹.
+/tickets/*
+!/tickets/.example.json
+!/tickets/.gitkeep
+
+# Claude Code 로컬 설정 (allowlist 등 환경별 차이)
+.claude/settings.local.json

@@ -1,36 +1,163 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Claude Workflow OS
 
-## Getting Started
+**English** · [한국어](./README.ko.md)
 
-First, run the development server:
+Local control plane for [Claude Code](https://docs.claude.com/claude-code). Run multiple `~/.claude` projects, watch live sessions, manage tickets on a kanban board, and get push-notified when an agent gets stuck — all from a single dashboard.
+
+> Status: early. Built for personal use, opinionated, but transparent enough to fork.
+
+## What you get
+
+- **Multi-project switcher** — register any folder containing a `.claude/` directory. Sessions, agents, skills, and settings are scoped per project.
+- **Live session viewer** — every Claude Code session JSONL is parsed and surfaced as Tasks · Conversation · Edited files · Timeline · Trace · Swimlane · Stats · Raw views. Tasks update in real time over SSE.
+- **Ticket kanban** — `OPEN → IN_PROGRESS → REVIEW → DONE` with `blocked` / `blockedReason`. Tickets are plain JSON files in `tickets/`, easy to inspect or hand-edit.
+- **Web Push** — get a browser/OS notification when a ticket enters `REVIEW` or an in-progress ticket is marked `blocked`. Works while the tab is closed.
+- **Notification center** — every mutation (ticket transition, project create, session resume, …) emits a categorized notification. Click to deep-link back to the relevant page.
+- **Built-in monitoring** — `/api/metrics` exposes Prometheus exposition; `/monitoring` page renders self-hosted charts (CPU, RSS, event-loop lag, per-route p99 latency, request rate, cache hit rate) without Grafana.
+- **Server health overlay** — every page polls `/api/health`; if the server stops responding, the UI dims with a clear "reconnect" prompt.
+- **URL is the view-state truth** — active project, tab, highlighted task all live in `?project=` / `?tab=` / `?taskId=`. Bookmarks, deep links, and the back button all just work.
+
+## Stack
+
+| Layer | Choice |
+|---|---|
+| Framework | Next.js 16 (App Router, Node runtime) |
+| Language | TypeScript strict |
+| Package manager | **pnpm** |
+| UI | Tailwind v4 + in-house primitives (`app/components/ui`) |
+| Data | Plain JSON files (`tickets/*.json`, `~/.claude/**`) |
+| Realtime | SSE (file-system watcher → in-process EventEmitter) |
+| Push | `web-push` (VAPID) |
+| Metrics | `prom-client` |
+| Validation | `zod` (HTTP boundary only) |
+
+No database. No auth. No external services beyond optional VAPID keys for push.
+
+## Requirements
+
+- **Node 20+**
+- **pnpm 10+**
+- A Claude Code installation (`claude` CLI on `$PATH`) for the launch / resume actions
+- **macOS** for "launch in new terminal" / "resume in new terminal" (uses Terminal.app / iTerm / Ghostty AppleScript). Other features are platform-neutral.
+
+## Quick start
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
+git clone <your fork>
+cd claude-workflow-os
+pnpm install
+
+# Optional: enable Web Push
+npx web-push generate-vapid-keys
+cp .env.example .env.local
+# paste the keys into .env.local
+
 pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open <http://localhost:3000>. The global `~/.claude` is registered as the **ALL** project automatically. Add more projects from the in-app switcher.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Project layout
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```
+app/
+├── dashboard/          # main view: sessions + context + tickets
+├── board/              # ticket kanban
+├── monitoring/         # Prometheus self-rendered charts
+├── settings/
+├── sessions/[id]/      # session detail (tasks, conversation, trace, …)
+├── components/
+│   ├── ui/             # zinc/slate primitives, no domain types
+│   ├── notifications/  # provider, bell, toast stack
+│   ├── use-*.ts        # domain hooks (use-tickets, use-sessions, …)
+│   └── *-client.ts     # axios adapters
+└── api/
+    ├── tickets, projects, sessions, settings, …
+    ├── health          # used by ServerHealthOverlay
+    └── metrics         # Prometheus exposition
 
-## Learn More
+lib/
+├── cache.ts            # createCache(name) — Prometheus-instrumented in-memory cache
+├── metrics.ts          # prom-client registry + withMetrics(route, handler)
+├── sessions.ts         # ~/.claude/projects scanning
+├── session-lookup.ts   # sessionId → jsonl path cache
+├── session-tasks.ts    # live + replayed task timeline
+├── session-watcher.ts  # SSE source: tails jsonl files
+├── session-extras.ts   # parse jsonl into views
+├── ticket-store.ts     # ticket CRUD + state machine + event bus
+└── …
 
-To learn more about Next.js, take a look at the following resources:
+tickets/                # ticket JSON storage (gitignored except .example.json)
+docs/rules/             # architecture rules — read these before contributing
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Architecture in one screen
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- **Routes are thin.** Every `/api/*` handler does `parse → call lib → respond` and is wrapped in `withMetrics(routePattern, handler)` for free histograms / counters.
+- **Single source of truth per concern.** Tickets in `lib/ticket-store.ts`. Push in `lib/web-push.ts`. SSE bus in `lib/session-watcher.ts`. No cross-imports.
+- **URL is the view-state truth.** No `localStorage` for tabs / projects / highlights. `useSearchParams` reads, `router.replace` writes.
+- **TanStack Query is the client cache.** SSE events merge via `setQueryData`, never trigger a refetch.
+- **mtime-based caches.** Anything reading from `~/.claude/**` is keyed by `(path, mtimeMs, size)` through `createCache(name)`. Hit / miss / size flow into Prometheus automatically.
+- **Metrics endpoint exposes** Node defaults + `http_request_duration_seconds` histogram + per-route counters + `cache_*` per named cache.
 
-## Deploy on Vercel
+For full conventions read [`docs/rules/`](./docs/rules/) — start with [`api.md`](./docs/rules/api.md), [`components.md`](./docs/rules/components.md), and [`performance.md`](./docs/rules/performance.md).
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Configuration
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+| Env var | Purpose |
+|---|---|
+| `CLAUDE_PROJECT_ROOT` | Override the global Claude root (defaults to `~/.claude`). Useful for tests. |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` | Web Push. Optional. See below. |
+
+App-level settings (terminal app, default prompt, permission mode, …) live at `~/.claude/.workflow-os.json` and are edited from the in-app Settings page.
+
+### Setting up Web Push (optional)
+
+Without VAPID keys the app still runs — push subscription endpoints just no-op. To enable real OS-level notifications:
+
+```bash
+# 1. Generate a fresh VAPID key pair (no Anthropic / Google account needed; web-push is self-hosted).
+npx web-push generate-vapid-keys
+
+# 2. Drop them into .env.local. .gitignore already excludes .env*; do not commit these.
+cp .env.example .env.local
+$EDITOR .env.local
+```
+
+`.env.local` should look like:
+
+```dotenv
+VAPID_PUBLIC_KEY=BJq...   # public key from step 1
+VAPID_PRIVATE_KEY=...     # private key from step 1 — keep secret
+VAPID_SUBJECT=mailto:you@example.com   # any URL or mailto: identifying you to push services
+```
+
+Then restart `pnpm dev`, open the app, and click the bell icon → enable notifications once per browser. The browser stores the subscription locally; push endpoints survive restarts.
+
+**Key safety**: the private key signs every push. If it leaks, anyone can send pushes to clients that subscribed against your public key — rotate by regenerating both keys and asking users to re-subscribe.
+
+## Tickets
+
+Tickets are JSON files under `tickets/`. The directory is gitignored (per-user data) — `tickets/.example.json` shows the shape expected by the store and HTTP API.
+
+## Scripts
+
+```bash
+pnpm dev           # next dev (hot reload)
+pnpm build         # production build
+pnpm start         # production server
+pnpm lint          # eslint
+```
+
+## Contributing
+
+PRs that respect the rules under `docs/rules/` are welcome.
+
+1. Read [`docs/rules/api.md`](./docs/rules/api.md), [`components.md`](./docs/rules/components.md), [`performance.md`](./docs/rules/performance.md).
+2. `pnpm lint` must pass — the project's PostToolUse hook (`.claude/settings.json`) auto-fixes most things on save.
+3. New `/api/*` routes go through `withMetrics`. New caches go through `createCache`.
+4. Add JSDoc to every exported function, type, and schema field — the rule isn't aspirational.
+
+## License
+
+MIT.
