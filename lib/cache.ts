@@ -39,6 +39,10 @@ const cacheSize: Gauge<"name"> =
     registers: [registry],
   });
 
+/**
+ * 이름이 부여된 인메모리 캐시. createCache로 생성하며, 모든 메서드가 같은
+ * Prometheus 메트릭에 name 라벨로 기록된다. TTL/LRU 없음.
+ */
 export interface NamedCache<K, V> {
   /** 조회. 키 존재 시 hit, 아니면 miss로 카운트. */
   get(key: K): V | undefined;

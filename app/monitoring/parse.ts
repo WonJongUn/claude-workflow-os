@@ -11,10 +11,15 @@ export type MetricSample = {
   value: number;
 };
 
+/** 한 메트릭 패밀리(같은 이름의 여러 샘플 묶음). HELP/TYPE 라인에서 메타가 채워진다. */
 export type MetricFamily = {
+  /** 메트릭 이름 (e.g. "http_requests_total"). */
   name: string;
+  /** HELP 라인에서 추출한 사람 읽기용 설명. */
   help?: string;
+  /** TYPE 라인에서 추출한 메트릭 종류. */
   type?: "counter" | "gauge" | "histogram" | "summary" | "untyped";
+  /** 라벨 조합별 샘플들. 빈 배열일 수 있다. */
   samples: MetricSample[];
 };
 

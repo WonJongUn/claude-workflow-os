@@ -15,10 +15,13 @@ export type SystemCheck = {
   claudePath: string | null;
   /** PATH에 `tmux` 실행 파일이 있는지. */
   tmux: boolean;
-  /** macOS 앱 설치 여부. */
+  /** macOS 앱 설치 여부 (`/Applications` 경로 존재 검사). 실행 중 여부와 무관. */
   terminals: {
+    /** Apple 기본 Terminal.app. */
     Terminal: boolean;
+    /** iTerm2. */
     iTerm: boolean;
+    /** Ghostty. */
     Ghostty: boolean;
   };
 };

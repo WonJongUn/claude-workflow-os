@@ -15,6 +15,11 @@ function buildRegistry(): Registry {
   return r;
 }
 
+/**
+ * 프로세스 단일 Prometheus Registry. 모든 메트릭이 여기에 등록된다.
+ * dev hot reload에서 중복 등록되지 않도록 globalThis 캐시를 사용.
+ * `/api/metrics`가 `registry.metrics()`로 직렬화해 노출.
+ */
 export const registry: Registry =
   globalThis.__metricsRegistry ?? (globalThis.__metricsRegistry = buildRegistry());
 
