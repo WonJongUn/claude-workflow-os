@@ -21,7 +21,9 @@ export const dynamic = "force-dynamic";
  * 두 source는 독립적이지만 표시 집합은 자연스럽게 겹친다 — live ⊆ history (대체로).
  */
 export type SessionTasksResponse = {
+  /** 현재 디스크에 살아있는 태스크 (`~/.claude/tasks/<sessionId>/*.json`). claude가 종료/완료 처리하면 사라진다. */
   live: SessionTask[];
+  /** jsonl 재생으로 복원한 전체 태스크 (완료·삭제 포함). 라이브를 포괄(live ⊆ history). */
   history: SessionTask[];
   /**
    * 리플레이용 이벤트 타임라인. `?events=1` 쿼리가 있을 때만 채워진다.

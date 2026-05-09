@@ -20,6 +20,10 @@ type ChartsProps = {
   stats: SessionStats;
 };
 
+/**
+ * 세션 통계 차트 묶음(시간대별 활동량·도구 사용·이벤트 종류 비율).
+ * 무거운 계산을 가지고 있어 React.lazy로 동적 import — 디폴트 export 유지.
+ */
 export default function SessionChartsView({ events, stats }: ChartsProps) {
   const buckets = useMemo(() => bucketByTime(events, stats), [events, stats]);
   const tools = useMemo(() => topTools(events, 8), [events]);

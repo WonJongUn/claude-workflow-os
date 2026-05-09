@@ -8,14 +8,15 @@ import {
   isPidAlive,
   readAllRuntimeStatuses,
 } from "@/lib/session-extras";
+import { buildSubagentParentMap, readSessionBundle } from "@/lib/sessions";
 
 import { withMetrics } from "@/lib/metrics";
 
-// jsonl 본문 캐시. mtime+size 조합이면 본문 동일하다고 간주.
+// 세션 본문(메인 + 서브에이전트 합본) 캐시. fingerprint 키.
 // 큰 세션(>1MB)은 readFile 자체가 비싸 폴링 폭주 시 디스크 부하의 주요 원인.
 const fileBodyCache = createCache<
   string,
-  { mtimeMs: number; size: number; body: string }
+  { fingerprint: string; body: string }
 >("session-file-body");
 
 export const runtime = "nodejs";
@@ -42,15 +43,17 @@ async function _GET(request: NextRequest) {
   if (typeof resolved !== "string") return resolved;
   const abs = resolved;
   try {
-    const stat = await fs.stat(abs);
-    if (!stat.isFile()) {
-      return Response.json({ error: "not a file" }, { status: 400 });
+    const bundle = await readSessionBundle(abs);
+    if (!bundle) {
+      return Response.json({ error: "not found" }, { status: 404 });
     }
-    // ETag = mtime+size. jsonl이 append-only라 같은 etag면 본문도 동일 — stale 위험 0.
-    const etag = `"${stat.mtimeMs}-${stat.size}"`;
+    // ETag = 응답 스키마 버전 + bundle fingerprint(모든 파일 mtime+size).
+    // 스키마 버전은 응답 shape이 바뀔 때 bump해 브라우저 HTTP 캐시(304 응답으로 재사용되는 본문)를 무효화한다.
+    // 파일 변경 시에는 fingerprint가 바뀌어 자동 무효화.
+    const SCHEMA_VERSION = "v2";
+    const etag = `"${SCHEMA_VERSION}-${hashString(bundle.fingerprint)}"`;
     const ifNoneMatch = request.headers.get("if-none-match");
     if (ifNoneMatch === etag) {
-      // 본문/JSON 직렬화 모두 생략. 클라(브라우저)가 캐시된 응답을 그대로 사용.
       return new Response(null, {
         status: 304,
         headers: {
@@ -60,16 +63,22 @@ async function _GET(request: NextRequest) {
       });
     }
     const cached = fileBodyCache.get(abs);
-    let body: string;
-    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
-      body = cached.body;
-    } else {
-      // 사용자 요청에 따라 상한 없이 전체 본문을 읽는다.
-      body = await fs.readFile(abs, "utf8");
-      fileBodyCache.set(abs, { mtimeMs: stat.mtimeMs, size: stat.size, body });
+    const body =
+      cached && cached.fingerprint === bundle.fingerprint
+        ? cached.body
+        : bundle.body;
+    if (!cached || cached.fingerprint !== bundle.fingerprint) {
+      fileBodyCache.set(abs, { fingerprint: bundle.fingerprint, body });
     }
+    const subagentParents = await buildSubagentParentMap(abs);
     return new Response(
-      JSON.stringify({ path: abs, size: stat.size, truncated: false, body }),
+      JSON.stringify({
+        path: abs,
+        size: body.length,
+        truncated: false,
+        body,
+        subagentParents,
+      }),
       {
         status: 200,
         headers: {
@@ -85,6 +94,15 @@ async function _GET(request: NextRequest) {
       { status: 500 },
     );
   }
+}
+
+/** ETag용 짧은 해시. 충돌 가능성은 무시할 수준 (변경 감지가 본질이라 강한 해시 불필요). */
+function hashString(s: string): string {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = (h * 31 + s.charCodeAt(i)) | 0;
+  }
+  return Math.abs(h).toString(36);
 }
 
 /**

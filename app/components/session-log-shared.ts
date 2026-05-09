@@ -6,6 +6,7 @@
  * 그 모듈들이 SessionLogView에서 import하면 순환이 생기므로 헬퍼만 따로 모은다.
  */
 
+/** Anthropic 메시지의 content 배열에 들어가는 블록 형태들. raw jsonl과 동일 스키마. */
 export type ContentBlock =
   | { type: "text"; text?: string }
   | { type: "thinking"; thinking?: string }
@@ -21,20 +22,38 @@ export type ContentBlock =
       is_error?: boolean;
     };
 
+/**
+ * 세션 jsonl 한 라인의 raw 형태. Claude Code가 기록하는 모든 필드를 다 받지는 않고,
+ * 뷰어가 사용하는 키만 선택적으로 가진다. parseSessionLog가 ParsedEvent로 정규화.
+ */
 export type RawEvent = {
+  /** "user"/"assistant"/"system"/"summary" 등. 분류 기준. */
   type?: string;
+  /** ISO 8601 타임스탬프. 없을 수 있음. */
   timestamp?: string;
+  /** 메시지 고유 id (Claude Code가 생성). 부모-자식 트리 구성에 사용. */
   uuid?: string;
+  /** 부모 uuid. 트리 루트면 null/undefined. */
   parentUuid?: string | null;
+  /** 서브에이전트(Task 도구) 메시지 여부. Trace V2에서 별도 lane. */
   isSidechain?: boolean;
+  /** type=summary일 때 요약 본문. */
   summary?: string;
+  /** Anthropic Messages API 형식의 메시지 본문. */
   message?: {
+    /** "user" | "assistant" 등. RawEvent.type과 보통 같지만 가끔 다름 (system 메시지의 user role 등). */
     role?: string;
+    /** 문자열(짧은 사용자 입력) 또는 블록 배열(tool_use/tool_result/thinking 등). */
     content?: string | ContentBlock[];
+    /** 어시스턴트 응답을 만든 모델 슬러그 (assistant 라인에서만). */
     model?: string;
   };
 };
 
+/**
+ * 정규화된 이벤트. parseSessionLog가 RawEvent를 분류·요약해 만든다.
+ * 모든 뷰(LogView/SwimLane/Trace/Charts)가 이 모양으로 소비한다.
+ */
 export type ParsedEvent = {
   /** 원본 객체 (디버그용). */
   raw: RawEvent;
@@ -63,6 +82,7 @@ export type ParsedEvent = {
   sidechain?: boolean;
 };
 
+/** 세션 요약 통계. computeSessionStats가 ParsedEvent[]에서 계산. */
 export type SessionStats = {
   /** 총 이벤트 수. */
   total: number;
@@ -74,13 +94,18 @@ export type SessionStats = {
   toolUse: number;
   /** 도구 결과 수. */
   toolResult: number;
-  /** 첫·마지막 timestamp (epoch ms). */
+  /** 첫 이벤트의 timestamp (epoch ms). 빈 세션이면 undefined. */
   firstTs?: number;
+  /** 마지막 이벤트의 timestamp (epoch ms). 세션 길이 계산: lastTs - firstTs. */
   lastTs?: number;
   /** 사용된 모델 (마지막 어시스턴트 기준). */
   lastModel?: string;
 };
 
+/**
+ * ParsedEvent.kind → 한국어 표시 라벨. 뱃지 본문, 필터 옵션, 차트 범례에서 공통 사용.
+ * 새 kind 추가 시 여기·KIND_TOOLTIP·뱃지 variant 매핑 셋을 함께 갱신.
+ */
 export const KIND_LABEL: Record<ParsedEvent["kind"], string> = {
   user: "사용자",
   assistant: "어시스턴트",
@@ -114,12 +139,12 @@ export const SPAN_KIND_TOOLTIP: Record<
 > = {
   turn: "사용자 입력 1회 = 1턴(루트 span). 그 아래에 어시스턴트 응답·도구 호출이 자식으로 묶인다.",
   assistant: KIND_TOOLTIP.assistant,
-  tool: "비-사이드체인 도구 호출. tool_use → 매칭된 tool_result로 기간 계산.",
+  tool: "비-서브에이전트 도구 호출. tool_use → 매칭된 tool_result로 기간 계산.",
   sidechain:
     "서브에이전트(Task 도구로 띄워진 보조 에이전트)가 호출한 도구. 부모 Task span 아래로 nesting.",
 };
 
-/** 사이드체인 라벨 자체에 대한 툴팁. */
+/** 서브에이전트 라벨 자체에 대한 툴팁. */
 export const SIDECHAIN_TOOLTIP =
   "서브에이전트(Task 도구로 띄워진 보조 에이전트)의 메시지.";
 

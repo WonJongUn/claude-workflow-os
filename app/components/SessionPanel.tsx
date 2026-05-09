@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { SessionMarkdown } from "./SessionMarkdown";
+import { SidechainBadge } from "./SidechainBadge";
 import {
   Badge,
   Button,
@@ -675,7 +676,7 @@ const SESSION_TABS: {
     intro: "사용자 입력 1회 = 1턴 단위로 묶은 트리 뷰.",
     points: [
       "각 턴 안에 어시스턴트 텍스트 + 도구 호출(↔ 결과 매칭) 들여쓰기",
-      "사이드체인(서브에이전트) 호출은 별도 색상으로 시각 분리",
+      "서브에이전트 호출은 별도 색상으로 시각 분리",
       "도구 호출이 많은 턴은 처음 몇 개만 보여주고 \"펼치기\" 제공",
     ],
   },
@@ -686,7 +687,7 @@ const SESSION_TABS: {
     points: [
       "세션 전체 = 1 trace, 사용자 턴 = root span, 도구 호출 = child span",
       "시간축에 막대로 위치·기간을 시각화 — 어느 도구가 오래 걸렸는지 한눈에",
-      "사이드체인 도구는 한 단계 더 들여쓴 자식 span으로 구분",
+      "서브에이전트 도구는 한 단계 더 들여쓴 자식 span으로 구분",
       "행 클릭 시 하단에 입력/결과/diff 상세 패널",
     ],
   },
@@ -695,7 +696,7 @@ const SESSION_TABS: {
     label: "스윔레인",
     intro: "종류별 행 × 시간 축의 이벤트 분포 차트.",
     points: [
-      "행: 사용자 · 어시스턴트 · 도구 · 결과 (사이드체인 있으면 추가)",
+      "행: 사용자 · 어시스턴트 · 도구 · 결과 (서브에이전트 있으면 추가)",
       "각 점은 한 이벤트 — 마우스를 올리면 미리보기가 뜸",
       "어느 시간대에 어떤 활동이 몰렸는지 시각적으로 파악",
     ],
@@ -907,6 +908,7 @@ export function SessionDetailView({
                     | "raw"
                 }
                 sessionId={session.id}
+                subagentParents={file.subagentParents}
                 hideChrome
               />
             ) : (
@@ -1007,6 +1009,7 @@ function SessionEditedFilesPanel({
     staleTime: 30_000,
   });
   const [order, setOrder] = useState<SortOrder>("desc");
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
 
   if (isLoading) {
     return (
@@ -1025,43 +1028,128 @@ function SessionEditedFilesPanel({
   if (data.editedFiles.length === 0) {
     return <EmptyState>이 세션에서 편집된 파일이 없습니다.</EmptyState>;
   }
-  // 서버는 lastAt desc로 정렬해서 보내준다. asc면 뒤집는다.
+  // 서브에이전트 필터 + 정렬. 두 셋은 disjoint하게 나눠 합이 전체와 같아지도록 한다.
+  // - 메인: 메인이 한 번이라도 만진 파일 (혼합 포함)
+  // - 서브에이전트: 서브에이전트만 만진 파일
+  const all = data.editedFiles;
+  const mainTouched = all.filter((f) => f.sidechainCount < f.count);
+  const sideOnly = all.filter((f) => f.sidechainCount === f.count);
+  const sourceTab =
+    sourceFilter === "main" ? mainTouched : sourceFilter === "side" ? sideOnly : all;
   const items =
     order === "desc"
-      ? data.editedFiles
-      : [...data.editedFiles].sort((a, b) => a.lastAt - b.lastAt);
+      ? sourceTab
+      : [...sourceTab].sort((a, b) => a.lastAt - b.lastAt);
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex justify-end">
+      <div className="flex items-center justify-between gap-2">
+        <SourceFilterTabs
+          value={sourceFilter}
+          onChange={setSourceFilter}
+          counts={{ all: all.length, main: mainTouched.length, side: sideOnly.length }}
+        />
         <SortToggle order={order} onChange={setOrder} />
       </div>
       <ul className="scroll-thin max-h-[70vh] divide-y divide-zinc-100 overflow-y-auto dark:divide-zinc-900">
-        {items.map((f) => (
-          <li
-            key={f.path}
-            className="flex items-start gap-3 py-2.5 text-xs"
-          >
-            <span className="w-32 shrink-0 font-mono text-[10px] tabular-nums text-zinc-500">
-              {new Date(f.lastAt).toLocaleString()}
-            </span>
-            <span className="inline-flex w-14 shrink-0 justify-end tabular-nums">
-              <Badge variant="info">
-                <span className="inline-block w-8 text-center tabular-nums">
-                  {f.count}회
-                </span>
-              </Badge>
-            </span>
-            <div className="min-w-0 flex-1">
-              <div className="truncate font-mono text-[11px] text-zinc-700 dark:text-zinc-300">
-                {f.path}
+        {items.map((f) => {
+          const onlySide = f.sidechainCount === f.count;
+          const mixed = f.sidechainCount > 0 && f.sidechainCount < f.count;
+          return (
+            <li
+              key={f.path}
+              className={cn(
+                "flex items-start gap-3 py-2.5 text-xs",
+                // 서브에이전트가 한 번이라도 만진 파일이면 violet 가이드 (다른 뷰의 사이드체인 표시와 일관).
+                f.sidechainCount > 0 &&
+                  "border-l-2 border-violet-300 pl-3 dark:border-violet-700",
+              )}
+            >
+              <span className="w-32 shrink-0 font-mono text-[10px] tabular-nums text-zinc-500">
+                {new Date(f.lastAt).toLocaleString()}
+              </span>
+              <span className="inline-flex w-14 shrink-0 justify-end tabular-nums">
+                <Badge variant="info">
+                  <span className="inline-block w-8 text-center tabular-nums">
+                    {f.count}회
+                  </span>
+                </Badge>
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-zinc-700 dark:text-zinc-300">
+                    {f.path}
+                  </span>
+                  {onlySide && <SidechainBadge />}
+                  {mixed && (
+                    <Tooltip content={`이 파일은 메인 ${f.count - f.sidechainCount}회 + 서브에이전트 ${f.sidechainCount}회 편집됨.`}>
+                      <Badge variant="subagent" className="whitespace-nowrap">
+                        서브에이전트 {f.sidechainCount}/{f.count}
+                      </Badge>
+                    </Tooltip>
+                  )}
+                </div>
+                <div className="truncate text-[10px] text-zinc-500">
+                  첫 변경 {new Date(f.firstAt).toLocaleString()}
+                </div>
               </div>
-              <div className="truncate text-[10px] text-zinc-500">
-                첫 변경 {new Date(f.firstAt).toLocaleString()}
-              </div>
-            </div>
-          </li>
-        ))}
+            </li>
+          );
+        })}
       </ul>
+    </div>
+  );
+}
+
+type SourceFilter = "all" | "main" | "side";
+
+/**
+ * 메인 흐름과 서브에이전트를 가르는 작은 탭 UI.
+ * 같은 패턴이 편집 파일·대화 패널에서 재사용된다.
+ */
+function SourceFilterTabs({
+  value,
+  onChange,
+  counts,
+}: {
+  value: SourceFilter;
+  onChange: (v: SourceFilter) => void;
+  counts: { all: number; main: number; side: number };
+}) {
+  const items: { id: SourceFilter; label: string; count: number }[] = [
+    { id: "all", label: "전체", count: counts.all },
+    { id: "main", label: "메인", count: counts.main },
+    { id: "side", label: "서브에이전트", count: counts.side },
+  ];
+  return (
+    <div className="inline-flex rounded-md border border-zinc-200 bg-white p-0.5 text-[11px] dark:border-zinc-800 dark:bg-zinc-950">
+      {items.map((it) => {
+        const active = value === it.id;
+        return (
+          <button
+            key={it.id}
+            type="button"
+            onClick={() => onChange(it.id)}
+            className={cn(
+              "inline-flex items-center gap-1 rounded px-2 py-0.5 transition-colors",
+              active
+                ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-900",
+            )}
+          >
+            <span>{it.label}</span>
+            <span
+              className={cn(
+                "rounded px-1 text-[10px] font-semibold",
+                active
+                  ? "bg-white/20"
+                  : "bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
+              )}
+            >
+              {it.count}
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -1496,6 +1584,7 @@ function SessionConversationPanel({
     staleTime: 30_000,
   });
   const [order, setOrder] = useState<SortOrder>("desc");
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
 
   if (isLoading) {
     return (
@@ -1514,24 +1603,42 @@ function SessionConversationPanel({
   if (data.conversation.length === 0) {
     return <EmptyState>이 세션의 대화 기록이 없습니다.</EmptyState>;
   }
-  // 서버는 desc(최신부터)로 보내준다. asc면 뒤집고, 번호는 항상 시간 순서.
+  // 시간 순서 번호는 항상 전체 기준. 시퀀스 번호는 서브에이전트을 포함해 매기지만,
+  // 필터 후 표시 단계에서만 항목을 가린다.
   const total = data.conversation.length;
-  const items = data.conversation.map((t, i) => ({
+  const numbered = data.conversation.map((t, i) => ({
     turn: t,
-    // 서버 결과는 desc이므로 i=0이 가장 최신 → 시간 번호는 (total - i).
     seq: total - i,
   }));
-  const ordered = order === "desc" ? items : [...items].reverse();
+  const allCount = numbered.length;
+  const mainCount = numbered.filter((x) => !x.turn.sidechain).length;
+  const sideCount = allCount - mainCount;
+  const filtered = numbered.filter((x) => {
+    if (sourceFilter === "main") return !x.turn.sidechain;
+    if (sourceFilter === "side") return x.turn.sidechain;
+    return true;
+  });
+  const ordered = order === "desc" ? filtered : [...filtered].reverse();
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex justify-end">
+      <div className="flex items-center justify-between gap-2">
+        <SourceFilterTabs
+          value={sourceFilter}
+          onChange={setSourceFilter}
+          counts={{ all: allCount, main: mainCount, side: sideCount }}
+        />
         <SortToggle order={order} onChange={setOrder} />
       </div>
       <ol className="scroll-thin flex max-h-[75vh] flex-col divide-y divide-zinc-100 overflow-y-auto dark:divide-zinc-900">
         {ordered.map(({ turn: t, seq }) => (
           <li
             key={`${t.timestamp}-${seq}`}
-            className="flex gap-3 py-4 first:pt-0"
+            className={cn(
+              "flex gap-3 py-4 first:pt-0",
+              // 서브에이전트 턴은 살짝 들여쓰고 좌측에 violet 가이드 라인.
+              t.sidechain &&
+                "border-l-2 border-violet-300 pl-3 dark:border-violet-700",
+            )}
           >
             <span className="w-32 shrink-0 font-mono text-[10px] tabular-nums text-zinc-500">
               {t.timestamp > 0 ? new Date(t.timestamp).toLocaleString() : "—"}
@@ -1551,6 +1658,7 @@ function SessionConversationPanel({
                     </Badge>
                   </span>
                 </Tooltip>
+                {t.sidechain && <SidechainBadge />}
                 <span className="font-mono">#{seq}</span>
               </div>
               {t.text && <SessionMarkdown text={t.text} />}

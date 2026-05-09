@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { createCache } from "@/lib/cache";
 import { projectRoot } from "@/lib/paths";
+import { readSessionBundle } from "@/lib/sessions";
 
 /**
  * 세션 jsonl을 처음부터 재생해 TaskCreate/TaskUpdate/TodoWrite 도구 호출 순서로
@@ -29,36 +30,30 @@ export type SessionTaskEvent = {
  * 세션 jsonl을 라인 순서대로 재생해 (이벤트 배열, 최종 상태)를 함께 반환한다.
  * 이벤트 배열은 리플레이 UI 전용 — 각 항목은 시점별 스냅샷이라 시간 역행 없이 평가 가능.
  */
-// jsonl 절대 경로 → {mtimeMs, size, result} 캐시.
-// 같은 mtime+size면 jsonl 본문이 동일하다고 간주해 재파싱 없이 즉시 반환.
+// 세션 fingerprint(메인+서브에이전트의 (path,mtime,size) 직렬화) → 결과.
+// 어느 파일이든 변경되면 fingerprint가 달라져 자동 무효화.
 const replayCache = createCache<
   string,
   {
-    mtimeMs: number;
-    size: number;
+    fingerprint: string;
     result: { events: SessionTaskEvent[]; finalTasks: SessionTask[] };
   }
 >("replay-task-timeline");
 
+/**
+ * 세션 jsonl을 라인 순서대로 재생해 `(이벤트 배열, 최종 상태)`를 함께 반환한다.
+ * 메인 + 서브에이전트 jsonl을 모두 읽어 합친 본문을 처리한다.
+ */
 export async function replaySessionTaskTimeline(
   jsonlPath: string,
 ): Promise<{ events: SessionTaskEvent[]; finalTasks: SessionTask[] }> {
-  let stat;
-  try {
-    stat = await fs.stat(jsonlPath);
-  } catch {
-    return { events: [], finalTasks: [] };
-  }
+  const bundle = await readSessionBundle(jsonlPath);
+  if (!bundle) return { events: [], finalTasks: [] };
   const cached = replayCache.get(jsonlPath);
-  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+  if (cached && cached.fingerprint === bundle.fingerprint) {
     return cached.result;
   }
-  let raw: string;
-  try {
-    raw = await fs.readFile(jsonlPath, "utf8");
-  } catch {
-    return { events: [], finalTasks: [] };
-  }
+  const raw = bundle.body;
   const created: SessionTask[] = [];
   const byId = new Map<string, SessionTask>();
   const events: SessionTaskEvent[] = [];
@@ -72,6 +67,9 @@ export async function replaySessionTaskTimeline(
     } catch {
       continue;
     }
+    // 서브에이전트의 TaskCreate/TaskUpdate는 그 서브에이전트의 *내부* 태스크 관리라
+    // 메인 세션의 태스크 목록과 섞이면 id 카운터 충돌이 생긴다. Tasks 탭은 메인 흐름만 보여준다.
+    if ((obj as { isSidechain?: boolean }).isSidechain === true) continue;
     const ts = extractTimestamp(obj);
     walkToolUses(obj, (name, input) => {
       if (name === "TaskCreate") {
@@ -135,14 +133,14 @@ export async function replaySessionTaskTimeline(
 
   const finalTasks = created.length > 0 ? created : (lastTodoWrite ?? []);
   const result = { events, finalTasks };
-  replayCache.set(jsonlPath, {
-    mtimeMs: stat.mtimeMs,
-    size: stat.size,
-    result,
-  });
+  replayCache.set(jsonlPath, { fingerprint: bundle.fingerprint, result });
   return result;
 }
 
+/**
+ * jsonl 라인 객체에서 timestamp 필드를 epoch ms로 추출.
+ * ISO 문자열·숫자 모두 허용. 누락이거나 파싱 실패 시 0.
+ */
 export function extractTimestamp(obj: unknown): number {
   if (!obj || typeof obj !== "object") return 0;
   const o = obj as Record<string, unknown>;
@@ -154,6 +152,10 @@ export function extractTimestamp(obj: unknown): number {
   return 0;
 }
 
+/**
+ * 도구 input 객체에서 문자열 필드를 안전하게 꺼낸다.
+ * 누락/타입 불일치 시 undefined — 호출 측에서 분기하기 좋게.
+ */
 export function stringField(
   input: Record<string, unknown> | undefined,
   key: string,
@@ -183,6 +185,10 @@ function mergeUnique(
   return Array.from(set);
 }
 
+/**
+ * jsonl 라인 객체를 재귀 순회하며 모든 `type: "tool_use"` 항목에 대해
+ * `(name, input)`을 호출한다. assistant 메시지 안 nested content를 모두 훑는다.
+ */
 export function walkToolUses(
   obj: unknown,
   visit: (

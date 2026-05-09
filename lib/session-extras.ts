@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createCache } from "./cache";
+import { readSessionBundle } from "./sessions";
 
 /** `~/.claude/sessions/<pid>.json` 파일에서 읽어오는 런타임 상태. */
 export type RuntimeStatus = {
@@ -25,8 +26,10 @@ export type RuntimeStatus = {
 export type EditedFile = {
   /** 절대 경로. */
   path: string;
-  /** 호출 횟수. */
+  /** 호출 횟수 (메인 + 서브에이전트 합산). */
   count: number;
+  /** 서브에이전트에서 일어난 호출 수. count 중 일부 또는 전부일 수 있음. */
+  sidechainCount: number;
   /** 첫 호출 시각 (epoch ms). */
   firstAt: number;
   /** 마지막 호출 시각 (epoch ms). */
@@ -51,6 +54,8 @@ export type ConversationTurn = {
   timestamp: number;
   /** 해당 턴의 도구 호출 목록 (assistant만). 라벨은 tool 이름. */
   toolCalls?: { name: string; filePath?: string }[];
+  /** 서브에이전트(Task 도구)에서 일어난 턴이면 true. UI에서 들여쓰기/배지로 구분. */
+  sidechain: boolean;
 };
 
 /**
@@ -67,6 +72,11 @@ const runtimeStatusCache = createCache<
   { dirMtimeMs: number; result: Map<string, RuntimeStatus> }
 >("runtime-statuses");
 
+/**
+ * `~/.claude/sessions/*.json`을 한 번 훑어 sessionId → RuntimeStatus 맵을 만든다.
+ * 죽은 pid는 자동으로 제외된다 (UI의 "활성" 표시와 실제 프로세스 상태를 일치시키기 위함).
+ * 디렉토리 mtime 캐시로 변경 없으면 재스캔하지 않는다.
+ */
 export async function readAllRuntimeStatuses(): Promise<Map<string, RuntimeStatus>> {
   const dir = path.join(os.homedir(), ".claude", "sessions");
   let dirStat;
@@ -170,30 +180,26 @@ export function isPidAlive(pid: number): boolean {
  * 세션 jsonl을 한 번 스캔해 편집(mutation) 도구 호출만 골라 파일별로 집계.
  * 읽기(Read)·검색(Grep) 등은 카운트하지 않는다 — "이 세션이 무엇을 바꿨나"가 목적.
  */
-// 큰 jsonl을 매번 풀파싱하지 않도록 mtime+size 캐시.
+// 메인 + 서브에이전트 본문을 합친 fingerprint로 캐시.
 const editedFilesCache = createCache<
   string,
-  { mtimeMs: number; size: number; result: EditedFile[] }
+  { fingerprint: string; result: EditedFile[] }
 >("parse-edited-files");
 
+/**
+ * 세션 jsonl을 1회 스캔해 mutation 도구가 만진 파일별 호출 수/시간을 집계.
+ * 메인 + 서브에이전트(`<sessionId>/subagents/agent-*.jsonl`)을 모두 본다.
+ * 결과는 lastAt 내림차순. fingerprint 캐시로 중복 파싱 회피.
+ */
 export async function parseEditedFiles(jsonlPath: string): Promise<EditedFile[]> {
-  let stat;
-  try {
-    stat = await fs.stat(jsonlPath);
-  } catch {
-    return [];
-  }
+  const bundle = await readSessionBundle(jsonlPath);
+  if (!bundle) return [];
   const cached = editedFilesCache.get(jsonlPath);
-  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+  if (cached && cached.fingerprint === bundle.fingerprint) {
     return cached.result;
   }
   const map = new Map<string, EditedFile>();
-  let raw: string;
-  try {
-    raw = await fs.readFile(jsonlPath, "utf8");
-  } catch {
-    return [];
-  }
+  const raw = bundle.body;
   for (const line of raw.split("\n")) {
     if (!line) continue;
     let obj: unknown;
@@ -203,22 +209,33 @@ export async function parseEditedFiles(jsonlPath: string): Promise<EditedFile[]>
       continue;
     }
     const ts = extractTimestamp(obj);
+    const isSidechain =
+      typeof obj === "object" &&
+      obj !== null &&
+      (obj as Record<string, unknown>).isSidechain === true;
     walk(obj, (toolName, input) => {
       if (!isMutatingTool(toolName)) return;
       const filePath = typeof input?.file_path === "string" ? input.file_path : null;
       if (!filePath) return;
       const prev = map.get(filePath);
       if (!prev) {
-        map.set(filePath, { path: filePath, count: 1, firstAt: ts, lastAt: ts });
+        map.set(filePath, {
+          path: filePath,
+          count: 1,
+          sidechainCount: isSidechain ? 1 : 0,
+          firstAt: ts,
+          lastAt: ts,
+        });
       } else {
         prev.count += 1;
+        if (isSidechain) prev.sidechainCount += 1;
         if (ts < prev.firstAt) prev.firstAt = ts;
         if (ts > prev.lastAt) prev.lastAt = ts;
       }
     });
   }
   const result = Array.from(map.values()).sort((a, b) => b.lastAt - a.lastAt);
-  editedFilesCache.set(jsonlPath, { mtimeMs: stat.mtimeMs, size: stat.size, result });
+  editedFilesCache.set(jsonlPath, { fingerprint: bundle.fingerprint, result });
   return result;
 }
 
@@ -259,31 +276,28 @@ export async function readUserPromptsForSession(
  * tool_result echo, thinking, tool_use는 본문 텍스트로 포함하지 않는다.
  * 단, assistant 턴에는 같이 일어난 tool_use를 toolCalls 배열로 첨부.
  */
-// 같은 jsonl을 두 곳(대화 패널, 편집파일 패널, 트레이스 등)에서 부르는 일이 많아 캐시 효과가 큼.
+// 메인 + 서브에이전트 본문을 합친 fingerprint로 캐시.
 const conversationCache = createCache<
   string,
-  { mtimeMs: number; size: number; result: ConversationTurn[] }
+  { fingerprint: string; result: ConversationTurn[] }
 >("parse-conversation");
 
+/**
+ * 세션 jsonl에서 사용자/어시스턴트 텍스트 턴을 시간 역순(최신이 위)으로 추출.
+ * 메인 + 서브에이전트(`<sessionId>/subagents/agent-*.jsonl`)을 모두 본다.
+ * tool_result echo·thinking·tool_use 본문은 텍스트로 포함하지 않는다.
+ * assistant 턴은 같이 일어난 tool_use를 toolCalls 배열로 첨부.
+ */
 export async function parseConversation(
   jsonlPath: string,
 ): Promise<ConversationTurn[]> {
-  let stat;
-  try {
-    stat = await fs.stat(jsonlPath);
-  } catch {
-    return [];
-  }
+  const bundle = await readSessionBundle(jsonlPath);
+  if (!bundle) return [];
   const cached = conversationCache.get(jsonlPath);
-  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+  if (cached && cached.fingerprint === bundle.fingerprint) {
     return cached.result;
   }
-  let raw: string;
-  try {
-    raw = await fs.readFile(jsonlPath, "utf8");
-  } catch {
-    return [];
-  }
+  const raw = bundle.body;
   const turns: ConversationTurn[] = [];
   for (const line of raw.split("\n")) {
     if (!line) continue;
@@ -298,13 +312,32 @@ export async function parseConversation(
     const msg = obj.message as Record<string, unknown> | undefined;
     if (!msg) continue;
     const ts = extractTimestamp(obj);
+    const sidechain = obj.isSidechain === true;
     const content = msg.content;
 
     if (type === "user") {
-      // user message.content가 문자열이면 진짜 사용자 입력.
-      // 배열이면 tool_result echo가 대부분이라 제외.
+      // 메인 흐름의 user는 보통 content가 문자열인 진짜 입력.
       if (typeof content === "string" && content.trim()) {
-        turns.push({ role: "user", text: content, timestamp: ts });
+        turns.push({ role: "user", text: content, timestamp: ts, sidechain });
+        continue;
+      }
+      // 배열인 경우: 메인이면 대부분 tool_result echo라 skip,
+      // 서브에이전트이면 서브에이전트의 첫 입력 프롬프트가 텍스트 블록으로 올 때가 있어 추출 시도.
+      if (sidechain && Array.isArray(content)) {
+        const texts: string[] = [];
+        for (const block of content) {
+          if (!block || typeof block !== "object") continue;
+          const b = block as Record<string, unknown>;
+          if (b.type === "text" && typeof b.text === "string") texts.push(b.text);
+        }
+        if (texts.length > 0) {
+          turns.push({
+            role: "user",
+            text: texts.join("\n\n"),
+            timestamp: ts,
+            sidechain,
+          });
+        }
       }
       continue;
     }
@@ -340,11 +373,13 @@ export async function parseConversation(
       text: texts.join("\n\n"),
       timestamp: ts,
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      sidechain,
     });
   }
   // 최신 턴이 위로 오도록 역순 반환.
-  const result = turns.reverse();
-  conversationCache.set(jsonlPath, { mtimeMs: stat.mtimeMs, size: stat.size, result });
+  // ts DESC 정렬 — 메인 + 서브에이전트 본문이 파일 순서로 합쳐져 들어와서 line 순서가 시간순이 아닐 수 있다.
+  const result = turns.slice().sort((a, b) => b.timestamp - a.timestamp);
+  conversationCache.set(jsonlPath, { fingerprint: bundle.fingerprint, result });
   return result;
 }
 

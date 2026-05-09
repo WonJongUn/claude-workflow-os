@@ -29,7 +29,7 @@ type TraceTurn = {
 
 /**
  * 트레이스 뷰: 사용자 턴을 루트로 묶고, 그 안에 어시스턴트 텍스트 + 도구 호출(↔결과 매칭)을
- * 들여써서 보여준다. 사이드체인은 별도 인덴트 영역으로 시각 분리.
+ * 들여써서 보여준다. 서브에이전트은 별도 인덴트 영역으로 시각 분리.
  */
 export default function SessionTraceView({ events }: { events: ParsedEvent[] }) {
   const turns = useMemo(() => buildTrace(events), [events]);
@@ -265,7 +265,7 @@ const TraceToolCall = memo(function TraceToolCall({
               : "text-sky-600 dark:text-sky-400",
           )}
         >
-          {sidechain ? "사이드체인" : "도구"}
+          {sidechain ? "서브에이전트" : "도구"}
         </span>
         <span className="font-mono text-zinc-700 dark:text-zinc-300">
           {toolUse.toolName}

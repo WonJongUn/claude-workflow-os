@@ -3,6 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { readAllRuntimeStatuses, type RuntimeStatus } from "./session-extras";
 
+/**
+ * Claude Code 세션 한 건. ~/.claude/projects/<encoded>/<id>.jsonl + 런타임 매칭으로 만든다.
+ * cwd 매칭의 진실 소스는 encodedDir (decodeForDisplay는 손실 변환).
+ */
 export type SessionInfo = {
   /** 세션 식별자 (파일명에서 추출). */
   id: string;
@@ -102,6 +106,207 @@ export async function listAllSessions(): Promise<SessionInfo[]> {
     }),
   );
   return perProject.flat().sort((a, b) => b.modifiedAt - a.modifiedAt);
+}
+
+/**
+ * 세션 전체(메인 + 서브에이전트) 본문을 한 문자열로 합치고, 캐시 키로 쓸 fingerprint도 함께 반환.
+ * fingerprint는 모든 파일의 `(path, mtimeMs, size)`를 정렬해 직렬화한 값이라
+ * 어느 파일 하나라도 변경되면 자동 무효화된다.
+ *
+ * 파일을 못 읽으면 null. 메인이 사라진 케이스도 포함.
+ */
+export async function readSessionBundle(
+  mainJsonlPath: string,
+): Promise<{ body: string; fingerprint: string } | null> {
+  const files = await enumerateSessionFiles(mainJsonlPath);
+  const stats = await Promise.all(
+    files.map(async (p) => {
+      try {
+        const s = await fs.stat(p);
+        return { p, mtimeMs: s.mtimeMs, size: s.size };
+      } catch {
+        return null;
+      }
+    }),
+  );
+  const alive = stats.filter((s): s is NonNullable<typeof s> => s !== null);
+  if (alive.length === 0) return null;
+  const fingerprint = alive
+    .slice()
+    .sort((a, b) => a.p.localeCompare(b.p))
+    .map((s) => `${s.p}:${s.mtimeMs}:${s.size}`)
+    .join("|");
+  const bodies = await Promise.all(
+    alive.map((s) =>
+      fs.readFile(s.p, "utf8").catch(() => ""),
+    ),
+  );
+  // 파일 사이에 빈 라인 보장 — split("\n")으로 라인을 자를 때 마지막 라인이 개행 없으면 다음 파일 첫 라인과 합쳐지는 것을 방지.
+  const body = bodies.map((b) => (b.endsWith("\n") ? b : b + "\n")).join("");
+  return { body, fingerprint };
+}
+
+/**
+ * 메인 jsonl + 같은 세션의 서브에이전트 jsonl들의 절대 경로 목록을 반환한다.
+ *
+ * Claude Code는 서브에이전트(Task 도구) 호출이 발생하면 메인 jsonl과 별도로
+ * `<sessionId>/subagents/agent-*.jsonl` 디렉토리를 만들어 각 서브에이전트의
+ * 대화·도구 호출을 기록한다. 편집 파일/대화/트레이스가 누락 없이 보이려면
+ * 메인과 모든 서브에이전트 파일을 함께 읽어야 한다.
+ *
+ * 서브에이전트 디렉토리가 없으면 메인 하나만 반환.
+ */
+export async function enumerateSessionFiles(
+  mainJsonlPath: string,
+): Promise<string[]> {
+  const files = [mainJsonlPath];
+  const sessionId = path.basename(mainJsonlPath, ".jsonl");
+  const subagentDir = path.join(path.dirname(mainJsonlPath), sessionId, "subagents");
+  let entries: string[] = [];
+  try {
+    entries = await fs.readdir(subagentDir);
+  } catch {
+    return files;
+  }
+  for (const name of entries) {
+    if (name.endsWith(".jsonl")) files.push(path.join(subagentDir, name));
+  }
+  return files;
+}
+
+/**
+ * 서브에이전트 agentId → 부모 Agent tool_use_id 매핑을 만든다.
+ *
+ * 매칭 키:
+ * 1. subagent jsonl 첫 라인의 `promptId` ↔ 메인 jsonl 어떤 라인의 `promptId` (turn 식별)
+ * 2. `<agentDir>/agent-<id>.meta.json`의 `description` ↔ 메인 Agent tool_use input의 `description`
+ *
+ * 같은 turn(promptId)에 여러 Agent가 spawn되면 description으로 1:1 disambiguate.
+ * jsonl 필드 + 별도 메타 파일을 직접 매칭하므로 결과 텍스트 형식 변동에 영향 없음.
+ *
+ * 서브에이전트 디렉토리가 없거나 메인을 못 읽으면 빈 맵.
+ */
+export async function buildSubagentParentMap(
+  mainJsonlPath: string,
+): Promise<Record<string, string>> {
+  const sessionId = path.basename(mainJsonlPath, ".jsonl");
+  const subagentDir = path.join(path.dirname(mainJsonlPath), sessionId, "subagents");
+  let entries: string[];
+  try {
+    entries = await fs.readdir(subagentDir);
+  } catch {
+    return {};
+  }
+  // (agentId, promptId, description) 수집.
+  const subs = await Promise.all(
+    entries
+      .filter((name) => name.startsWith("agent-") && name.endsWith(".jsonl"))
+      .map(async (name) => {
+        const agentId = name.slice("agent-".length, -".jsonl".length);
+        const jsonlPath = path.join(subagentDir, name);
+        const metaPath = path.join(subagentDir, `agent-${agentId}.meta.json`);
+        const [firstLine, metaRaw] = await Promise.all([
+          readFirstLine(jsonlPath),
+          fs.readFile(metaPath, "utf8").catch(() => null),
+        ]);
+        let promptId: string | null = null;
+        try {
+          const obj = firstLine ? (JSON.parse(firstLine) as { promptId?: string }) : null;
+          if (obj && typeof obj.promptId === "string") promptId = obj.promptId;
+        } catch {
+          // ignore
+        }
+        let description: string | null = null;
+        if (metaRaw) {
+          try {
+            const meta = JSON.parse(metaRaw) as { description?: string };
+            if (typeof meta.description === "string") description = meta.description;
+          } catch {
+            // ignore
+          }
+        }
+        return { agentId, promptId, description };
+      }),
+  );
+  if (subs.length === 0) return {};
+
+  // 메인을 한 번 훑어 promptId → Agent tool_use 후보 모음.
+  // Claude Code jsonl에서 promptId는 user 라인에만 명시된다. 같은 turn의 assistant 라인(Agent tool_use가 들어있는)은
+  // promptId가 null이라 직전 user 라인의 promptId를 상속받아 attribute해야 한다.
+  let mainRaw: string;
+  try {
+    mainRaw = await fs.readFile(mainJsonlPath, "utf8");
+  } catch {
+    return {};
+  }
+  type AgentUse = { id: string; description: string | null };
+  const agentUsesByPromptId = new Map<string, AgentUse[]>();
+  let currentPromptId: string | null = null;
+  for (const line of mainRaw.split("\n")) {
+    if (!line) continue;
+    let obj: Record<string, unknown>;
+    try {
+      obj = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (typeof obj.promptId === "string") currentPromptId = obj.promptId;
+    if (!currentPromptId) continue;
+    const msg = obj.message as { content?: unknown } | undefined;
+    const content = msg?.content;
+    if (!Array.isArray(content)) continue;
+    for (const b of content) {
+      if (!b || typeof b !== "object") continue;
+      const block = b as Record<string, unknown>;
+      if (block.type !== "tool_use" || block.name !== "Agent") continue;
+      const id = typeof block.id === "string" ? (block.id as string) : "";
+      const input = block.input as Record<string, unknown> | undefined;
+      const description =
+        input && typeof input.description === "string"
+          ? (input.description as string)
+          : null;
+      if (!id) continue;
+      let arr = agentUsesByPromptId.get(currentPromptId);
+      if (!arr) {
+        arr = [];
+        agentUsesByPromptId.set(currentPromptId, arr);
+      }
+      arr.push({ id, description });
+    }
+  }
+
+  const out: Record<string, string> = {};
+  for (const sub of subs) {
+    if (!sub.promptId) continue;
+    const candidates = agentUsesByPromptId.get(sub.promptId) ?? [];
+    if (candidates.length === 0) continue;
+    // 1) description 일치 우선.
+    const match =
+      candidates.find((c) => c.description === sub.description) ??
+      // 2) 후보가 하나뿐이면 그것.
+      (candidates.length === 1 ? candidates[0] : undefined);
+    if (match) out[sub.agentId] = match.id;
+  }
+  return out;
+}
+
+/** jsonl 첫 라인만 읽어 반환. 큰 파일 전체를 메모리에 올리지 않게 64KB만 stream. */
+async function readFirstLine(filePath: string): Promise<string | null> {
+  try {
+    const fh = await fs.open(filePath, "r");
+    try {
+      const buf = Buffer.alloc(64 * 1024);
+      const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+      if (bytesRead === 0) return null;
+      const text = buf.subarray(0, bytesRead).toString("utf8");
+      const nl = text.indexOf("\n");
+      return nl >= 0 ? text.slice(0, nl) : text;
+    } finally {
+      await fh.close();
+    }
+  } catch {
+    return null;
+  }
 }
 
 /**

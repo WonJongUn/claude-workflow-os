@@ -1,12 +1,17 @@
 import type { ReactNode } from "react";
 import { cn } from "./cn";
 
+/**
+ * Badge 색 의도. 도메인 enum을 직접 받지 않고 이 variant만 안다 (UI 프리미티브 분리).
+ * 도메인 → variant 매핑은 *-meta.ts 모듈이 책임.
+ */
 export type BadgeVariant =
   | "default"
   | "success"
   | "warning"
   | "danger"
-  | "info";
+  | "info"
+  | "subagent";
 
 const variantClasses: Record<BadgeVariant, string> = {
   default:
@@ -18,8 +23,12 @@ const variantClasses: Record<BadgeVariant, string> = {
   danger:
     "bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-300 border-red-200 dark:border-red-900",
   info: "bg-sky-50 text-sky-700 dark:bg-sky-950 dark:text-sky-300 border-sky-200 dark:border-sky-900",
+  // 서브에이전트 표시 전용. 다른 뷰의 violet 좌측 가이드와 같은 톤으로 시각 통일.
+  subagent:
+    "bg-violet-50 text-violet-700 dark:bg-violet-950 dark:text-violet-300 border-violet-200 dark:border-violet-900",
 };
 
+/** 의미 색을 가진 작은 칩. 한 줄 라벨 전용 — 긴 본문은 다른 표면 컴포넌트로. */
 export function Badge({
   variant = "default",
   children,

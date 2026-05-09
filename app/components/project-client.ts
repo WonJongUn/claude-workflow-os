@@ -65,6 +65,7 @@ export async function browseFs(target?: string): Promise<DirListing> {
   return data;
 }
 
+/** 사용자 정의 컨텍스트 항목 종류. lib/entry-store의 EntryKind와 동일 의미 (HTTP 경계용 사본). */
 export type EntryKind = "agent" | "skill";
 
 /**
@@ -90,23 +91,42 @@ export async function deleteEntry(input: {
   await api.delete("/entries", { data: input });
 }
 
+/**
+ * 살아있는 Claude Code 프로세스의 런타임 상태. lib/session-extras의 RuntimeStatus와 동형.
+ * 프로세스가 죽으면 SessionInfo.runtime은 undefined.
+ */
 export type SessionRuntime = {
+  /** Claude Code 프로세스 pid. */
   pid: number;
+  /** "waiting"/"running"/"dialog open" 등. 표시용 문자열. */
   status: string;
+  /** 대기 중인 이유 (예: "user input"). */
   waitingFor?: string;
+  /** Claude Code 버전 문자열. */
   version?: string;
+  /** "interactive" / "print" 등. */
   kind?: string;
+  /** 시작 시각 (epoch ms). */
   startedAt?: number;
+  /** 마지막 갱신 시각 (epoch ms). */
   updatedAt?: number;
 };
 
+/** Claude Code 세션 한 건. lib/sessions의 SessionInfo와 동형 (HTTP 경계 표현). */
 export type SessionInfo = {
+  /** 세션 식별자 (jsonl 파일명에서 확장자 제외). */
   id: string;
+  /** 세션이 시작된 작업 디렉토리. encodedDir에서 디코딩한 표시용 값. */
   cwd: string;
+  /** 인코딩된 디렉토리명. cwd 매칭의 진실 소스. */
   encodedDir: string;
+  /** jsonl 파일 절대 경로. */
   filePath: string;
+  /** 마지막 수정 시각 (epoch ms). */
   modifiedAt: number;
+  /** 최근 5분 내 갱신되었으면 true. */
   active: boolean;
+  /** 살아있는 Claude Code 프로세스가 매칭되면 채워진다. */
   runtime?: SessionRuntime;
 };
 
@@ -130,6 +150,7 @@ export async function fetchSessionInfo(sessionId: string): Promise<SessionInfo> 
   return data;
 }
 
+/** 세션 jsonl 본문 응답. /sessions/file 라우트가 반환. */
 export type SessionFile = {
   /** 절대 경로. */
   path: string;
@@ -137,8 +158,10 @@ export type SessionFile = {
   size: number;
   /** 본문이 잘렸는지 여부. 현재 라우트는 항상 false (전체 본문 반환). */
   truncated: boolean;
-  /** jsonl 본문 전체. */
+  /** jsonl 본문 전체 (메인 + 서브에이전트 합본). */
   body: string;
+  /** 서브에이전트 agentId → 부모 Agent tool_use_id 매핑. Trace V2가 nesting에 사용. */
+  subagentParents: Record<string, string>;
 };
 
 /**
@@ -153,28 +176,49 @@ export async function fetchSessionFile(
   return data;
 }
 
+/** 세션이 mutation 도구로 만진 파일 한 건. lib/session-extras EditedFile의 클라 사본. */
 export type SessionEditedFile = {
+  /** 절대 경로. */
   path: string;
+  /** 호출 횟수 (메인 + 서브에이전트 합산). */
   count: number;
+  /** 서브에이전트에서 일어난 호출 수. */
+  sidechainCount: number;
+  /** 첫 호출 시각 (epoch ms). */
   firstAt: number;
+  /** 마지막 호출 시각 (epoch ms). */
   lastAt: number;
 };
 
+/** 사용자 프롬프트 한 건. ~/.claude/history.jsonl에서 추출. */
 export type SessionUserPrompt = {
+  /** 사용자가 입력한 텍스트. */
   display: string;
+  /** epoch ms. */
   timestamp: number;
 };
 
+/** 대화 한 턴. ConversationTurn의 클라 사본. */
 export type SessionConversationTurn = {
+  /** 화자. */
   role: "user" | "assistant";
+  /** 표시할 텍스트. assistant는 모든 text 블록을 \n\n으로 이어붙임. */
   text: string;
+  /** epoch ms. */
   timestamp: number;
+  /** assistant 턴에서 같이 일어난 도구 호출. user 턴에서는 항상 미존재. */
   toolCalls?: { name: string; filePath?: string }[];
+  /** 서브에이전트(Task 도구)에서 일어난 턴이면 true. UI에서 들여쓰기/배지로 구분. */
+  sidechain: boolean;
 };
 
+/** /sessions/extras 응답 — 한 화면에 필요한 보조 정보 묶음. */
 export type SessionExtras = {
+  /** 편집된 파일 (lastAt 내림차순). */
   editedFiles: SessionEditedFile[];
+  /** 사용자 프롬프트 (최신순). */
   userPrompts: SessionUserPrompt[];
+  /** 대화 턴 (최신순). */
   conversation: SessionConversationTurn[];
 };
 
@@ -190,6 +234,7 @@ export async function fetchSessionExtras(
   return data;
 }
 
+/** Claude Code 세션이 진행 중에 관리하는 단일 태스크. lib/session-tasks SessionTask의 클라 사본. */
 export type SessionTask = {
   /** 태스크 id. 세션 내부에서 1부터 증가. */
   id: string;
@@ -209,6 +254,7 @@ export type SessionTask = {
   owner?: string;
 };
 
+/** 단일 태스크 이벤트 (리플레이 한 단계). lib/session-tasks SessionTaskEvent의 클라 사본. */
 export type SessionTaskEvent = {
   /** jsonl line의 timestamp (epoch ms). 0이면 알 수 없음. */
   ts: number;
@@ -220,6 +266,7 @@ export type SessionTaskEvent = {
   snapshot: SessionTask;
 };
 
+/** /sessions/tasks 응답. live와 history의 차이는 완료/삭제 포함 여부. */
 export type SessionTasksResponse = {
   /** 디스크에 살아있는 라이브 태스크. claude가 진행 중일 때만 존재. */
   live: SessionTask[];
@@ -285,6 +332,7 @@ export async function resumeSession(
   return data;
 }
 
+/** 파일 검색 결과 한 건. lib/file-search FileHit의 클라 사본. */
 export type FileHit = {
   /** 검색 기준 디렉토리 기준 상대 경로. */
   relative: string;

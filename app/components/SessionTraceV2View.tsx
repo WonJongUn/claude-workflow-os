@@ -66,15 +66,25 @@ type TraceV2 = {
   spans: SpanV2[];
 };
 
+/**
+ * V2 트레이스 뷰 — turn 루트 + 그 아래 assistant/tool 자식 span의 nested 시각화.
+ * 서브에이전트도 부모 Task span 아래로 nesting된다. React.lazy 동적 import.
+ */
 export default function SessionTraceV2View({
   events,
   sessionId,
+  subagentParents,
 }: {
   events: ParsedEvent[];
   /** 세션 id. trace id로 헤더에 노출. */
   sessionId: string;
+  /** 서버가 미리 계산한 agentId → 부모 Agent tool_use_id 매핑. nesting에 사용. */
+  subagentParents: Record<string, string>;
 }) {
-  const trace = useMemo(() => buildTrace(events, sessionId), [events, sessionId]);
+  const trace = useMemo(
+    () => buildTrace(events, sessionId, subagentParents),
+    [events, sessionId, subagentParents],
+  );
   const [selectedId, setSelectedId] = useState<string | null>(null);
   /**
    * 사용자가 명시적으로 토글한 span의 의도된 상태 (true=접힘, false=펼침).
@@ -509,8 +519,8 @@ function SpanDetail({
  *
  * 트리 구성 규칙:
  * - 세션 = 1 trace, 사용자 메시지 = root span(턴).
- * - 비-사이드체인 도구 호출/어시스턴트 텍스트는 턴의 직계 자식.
- * - 사이드체인(서브에이전트) 이벤트는 raw.parentUuid 체인을 따라
+ * - 비-서브에이전트 도구 호출/어시스턴트 텍스트는 턴의 직계 자식.
+ * - 서브에이전트 이벤트는 raw.parentUuid 체인을 따라
  *   가장 가까운 tool_use 조상 아래로 nesting한다 (Task → 그 안의 도구들).
  *   조상이 없으면 턴 직계 자식으로 떨어진다.
  *
@@ -519,16 +529,28 @@ function SpanDetail({
 function buildTrace(
   events: ParsedEvent[],
   sessionId: string,
+  subagentParents: Record<string, string>,
 ): TraceV2 | null {
-  const timed = events.filter((e) => typeof e.ts === "number");
+  // 메인 + 서브에이전트 jsonl이 합쳐 들어와 file 순서로는 시간 역순일 수 있다.
+  // 트레이스/턴 경계가 올바르려면 ts 기준 전역 정렬이 먼저.
+  const timed = events
+    .filter((e) => typeof e.ts === "number")
+    .slice()
+    .sort((a, b) => (a.ts as number) - (b.ts as number));
   if (timed.length === 0) return null;
 
   const resultsById = new Map<string, ParsedEvent>();
-  for (const ev of events) {
+  for (const ev of timed) {
     if (ev.kind !== "tool_result") continue;
     const id = extractToolUseId(ev.raw, "tool_result");
     if (id) resultsById.set(id, ev);
   }
+
+  // 서버가 jsonl 필드 + .meta.json으로 미리 빌드한 안정적 매핑.
+  // 텍스트 패턴(이전의 "agentId:" 정규식) 의존 제거 — 100% 매칭 가능.
+  const taskUseIdByAgentId = new Map<string, string>(
+    Object.entries(subagentParents),
+  );
 
   const traceStart = timed[0].ts as number;
   const traceEnd = timed[timed.length - 1].ts as number;
@@ -540,9 +562,10 @@ function buildTrace(
   };
   const turns: Turn[] = [];
   let current: Turn | null = null;
-  for (const ev of events) {
+  for (const ev of timed) {
     if (typeof ev.ts !== "number") continue;
-    if (ev.kind === "user") {
+    // 메인 thread의 user만 새 턴 시작점. 서브에이전트 user는 서브에이전트의 가짜 입력이라 합쳐서 처리.
+    if (ev.kind === "user" && ev.sidechain !== true) {
       current = { user: ev, events: [], startMs: ev.ts };
       turns.push(current);
       continue;
@@ -568,15 +591,23 @@ function buildTrace(
 
     // 1차: 각 이벤트의 노드 생성. parent는 일단 turn으로 두고 2차 패스에서 재배선.
     const nodeByEventUuid = new Map<string, SpanNode>();
+    // tool_use 노드를 tool_use_id로도 색인 — 서브에이전트 첫 이벤트가 agentId로 부모 Task를 찾을 때 사용.
+    const nodeByToolUseId = new Map<string, SpanNode>();
     let key = 0;
     for (const ev of turn.events) {
       if (typeof ev.ts !== "number") continue;
       const node = makeNode(ev, turnId, key++, resultsById);
       if (!node) continue;
       if (ev.raw.uuid) nodeByEventUuid.set(ev.raw.uuid, node);
+      if (ev.kind === "tool_use") {
+        const tuId = extractToolUseId(ev.raw, "tool_use");
+        if (tuId) nodeByToolUseId.set(tuId, node);
+      }
     }
 
-    // 2차: 사이드체인 노드의 부모를 parentUuid 체인을 따라 가장 가까운 tool_use 조상으로 재배선.
+    // 2차: 서브에이전트 노드의 부모를 parentUuid 체인을 따라 가장 가까운 *메인 thread* tool_use 조상으로 재배선.
+    // 직전 서브에이전트 tool_use를 부모로 잡으면 한 서브에이전트 안의 Read N개가 끝없이 중첩되므로 건너뛴다.
+    // 결과적으로 한 Task 아래 그 서브에이전트가 만진 모든 도구가 형제(flat)로 정렬된다.
     const turnRoot: SpanNode = {
       span: {} as SpanV2,
       children: [],
@@ -586,19 +617,30 @@ function buildTrace(
       const isSide = ev.sidechain === true;
       let parent: SpanNode | undefined;
       if (isSide) {
-        let cur: ParsedEvent | undefined = ev;
-        const seen = new Set<string>();
-        while (cur) {
-          const pUuid = cur.raw.parentUuid;
-          if (!pUuid || seen.has(pUuid)) break;
-          seen.add(pUuid);
-          const cand = nodeByEventUuid.get(pUuid);
-          if (cand && cand.span.kind !== "assistant") {
-            // 가장 가까운 tool_use 조상(사이드체인이든 아니든)을 부모로 채택.
-            parent = cand;
-            break;
+        // 우선 agentId로 부모 Task 직접 lookup. 서브에이전트 첫 이벤트는 parentUuid가 null이라 이게 유일한 경로.
+        const agentId =
+          typeof (ev.raw as { agentId?: unknown }).agentId === "string"
+            ? ((ev.raw as { agentId?: string }).agentId ?? "")
+            : "";
+        if (agentId) {
+          const taskUseId = taskUseIdByAgentId.get(agentId);
+          if (taskUseId) parent = nodeByToolUseId.get(taskUseId);
+        }
+        // 폴백: parentUuid 체인을 따라 메인 thread의 tool_use 조상을 찾는다.
+        if (!parent) {
+          let cur: ParsedEvent | undefined = ev;
+          const seen = new Set<string>();
+          while (cur) {
+            const pUuid = cur.raw.parentUuid;
+            if (!pUuid || seen.has(pUuid)) break;
+            seen.add(pUuid);
+            const cand = nodeByEventUuid.get(pUuid);
+            if (cand && cand.span.kind === "tool" && cand.span.event.sidechain !== true) {
+              parent = cand;
+              break;
+            }
+            cur = eventByUuid.get(pUuid);
           }
-          cur = eventByUuid.get(pUuid);
         }
       }
       if (parent) {

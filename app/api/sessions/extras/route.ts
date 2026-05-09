@@ -14,10 +14,13 @@ import { withMetrics } from "@/lib/metrics";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** 응답 형태. */
+/** 세션 상세 화면이 한 번에 받는 보조 데이터 묶음. 메인 + 서브에이전트 jsonl을 합쳐 파싱한 결과. */
 export type SessionExtras = {
+  /** 편집(Edit/Write/MultiEdit/NotebookEdit) 도구가 만진 파일별 집계. lastAt 내림차순. */
   editedFiles: EditedFile[];
+  /** 이 세션이 참조한 `~/.claude/history.jsonl`의 사용자 입력. timestamp 내림차순. */
   userPrompts: UserPrompt[];
+  /** 사용자/어시스턴트 대화 턴 (도구 호출 제외, 도구 호출명만 부속). timestamp 내림차순. */
   conversation: ConversationTurn[];
 };
 

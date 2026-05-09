@@ -6,10 +6,10 @@ import { SessionDiffBlock } from "./SessionDiffBlock";
 import { SortToggle, Tooltip, type SortOrder } from "./ui";
 import { LazyMarkdown } from "./LazyMarkdown";
 import { SessionCodeBlock } from "./SessionCodeBlock";
+import { SidechainBadge } from "./SidechainBadge";
 import {
   KIND_LABEL,
   KIND_TOOLTIP,
-  SIDECHAIN_TOOLTIP,
   extractEditChanges,
   formatDuration,
   normalizeContent,
@@ -37,6 +37,7 @@ export function SessionLogView({
   view: controlledView,
   hideChrome,
   sessionId,
+  subagentParents,
 }: {
   /** jsonl 본문 (마지막 N바이트). */
   body: string;
@@ -46,6 +47,8 @@ export function SessionLogView({
   hideChrome?: boolean;
   /** trace_v2 뷰가 trace id로 노출. 미지정 시 빈 문자열. */
   sessionId?: string;
+  /** 서브에이전트 agentId → 부모 Agent tool_use_id. trace_v2에서 nesting에 사용. */
+  subagentParents?: Record<string, string>;
 }) {
   const events = useMemo(() => parseLog(body), [body]);
   const stats = useMemo(() => computeStats(events), [events]);
@@ -83,7 +86,11 @@ export function SessionLogView({
       )}
       {view === "trace_v2" && (
         <Suspense fallback={<LazyViewFallback />}>
-          <SessionTraceV2View events={events} sessionId={sessionId ?? ""} />
+          <SessionTraceV2View
+            events={events}
+            sessionId={sessionId ?? ""}
+            subagentParents={subagentParents ?? {}}
+          />
         </Suspense>
       )}
       {view === "swim" && (
@@ -146,6 +153,7 @@ function ViewToggle({
   );
 }
 
+/** 세션 상단에 표시되는 통계 한 줄 (이벤트 수, 사용자/어시스턴트 비율, 모델 등). */
 export function SessionStatsRow({ stats }: { stats: SessionStats }) {
   return <StatsRow stats={stats} />;
 }
@@ -241,7 +249,13 @@ const TimelineRow = memo(function TimelineRow({ event: ev }: { event: ParsedEven
   const [expanded, setExpanded] = useState(false);
   const hasDiff = changes.changes.length > 0;
   return (
-    <div className="flex gap-3 py-2.5">
+    <div
+      className={
+        ev.sidechain
+          ? "flex gap-3 border-l-2 border-violet-300 py-2.5 pl-3 dark:border-violet-700"
+          : "flex gap-3 py-2.5"
+      }
+    >
       <span className="w-32 shrink-0 pt-0.5 font-mono text-[10px] tabular-nums text-zinc-500">
         {ev.timestamp ? new Date(ev.timestamp).toLocaleString() : ""}
       </span>
@@ -316,7 +330,7 @@ function KindBadge({
   sidechain?: boolean;
 }) {
   return (
-    <div className="flex w-20 shrink-0 flex-col items-start gap-0.5">
+    <div className="flex w-28 shrink-0 flex-col items-start gap-1">
       <Tooltip content={KIND_TOOLTIP[kind]}>
         <span
           className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${KIND_TONE[kind]}`}
@@ -324,25 +338,39 @@ function KindBadge({
           {KIND_LABEL[kind]}
         </span>
       </Tooltip>
-      {sidechain && (
-        <Tooltip content={SIDECHAIN_TOOLTIP}>
-          <span className="text-[9px] text-zinc-500">서브에이전트</span>
-        </Tooltip>
-      )}
+      {sidechain && <SidechainBadge />}
     </div>
   );
 }
 
+/**
+ * 세션 jsonl 본문(개행 구분 JSON)을 ParsedEvent 배열로 정규화. 손상 라인은 건너뜀.
+ * 무거운 동적 import 뷰들이 공유하는 단일 진입점.
+ */
 export function parseSessionLog(body: string): ParsedEvent[] {
   return parseLog(body);
 }
 
+/** ParsedEvent 배열 → 화면 상단 통계. 호출 비용 O(n), 메모이제이션 권장. */
 export function computeSessionStats(events: ParsedEvent[]): SessionStats {
   return computeStats(events);
 }
 
+/** 외부 호환성을 위한 alias. 새 코드는 ParsedEvent를 직접 import한다. */
 export type SessionParsedEvent = ParsedEvent;
+/** 외부 호환성을 위한 alias. 새 코드는 SessionStats를 직접 import한다. */
 export type SessionLogStats = SessionStats;
+
+// Claude Code 내부 메타/캐시 이벤트 — 데이터 분석 결과 모두 노이즈로 판정.
+// - ai-title(같은 제목 N회), last-prompt(ts 없음 + user 라인과 중복), file-history-snapshot(내부 백업 메타)
+// - attachment(같은 N가지가 수백 번 반복), queue-operation(user 입력의 큐 미러)
+const META_TYPES = new Set([
+  "attachment",
+  "ai-title",
+  "last-prompt",
+  "queue-operation",
+  "file-history-snapshot",
+]);
 
 function parseLog(body: string): ParsedEvent[] {
   const out: ParsedEvent[] = [];
@@ -355,9 +383,21 @@ function parseLog(body: string): ParsedEvent[] {
     } catch {
       continue;
     }
+    if (META_TYPES.has(raw.type as string)) continue;
     out.push(toParsed(raw));
   }
-  return out;
+  // 본문은 메인 + 서브에이전트 jsonl을 파일 순서로 concat한 것이라 라인 순서가 시간순이 아니다.
+  // 모든 뷰(Timeline/Trace/SwimLane/통계)가 시간순 가정을 한다 — 여기서 한 번 정렬해 통일.
+  // ts 없는 이벤트(요약 등)는 안정 정렬을 위해 원래 위치를 유지.
+  return out
+    .map((e, idx) => ({ e, idx }))
+    .sort((a, b) => {
+      const ta = typeof a.e.ts === "number" ? a.e.ts : Number.POSITIVE_INFINITY;
+      const tb = typeof b.e.ts === "number" ? b.e.ts : Number.POSITIVE_INFINITY;
+      if (ta !== tb) return ta - tb;
+      return a.idx - b.idx;
+    })
+    .map((x) => x.e);
 }
 
 function toParsed(raw: RawEvent): ParsedEvent {
@@ -418,6 +458,7 @@ function classifyKind(raw: RawEvent): ParsedEvent["kind"] {
   if (raw.type === "summary") return "summary";
   return "other";
 }
+
 
 function collectText(blocks: ContentBlock[]): string {
   const parts: string[] = [];

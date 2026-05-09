@@ -22,7 +22,7 @@ const SWIM_LANES: {
 ];
 
 /**
- * 스윔레인 뷰: 종류별 행(사용자/어시스턴트/도구/결과 + 사이드체인) × 시간 축.
+ * 스윔레인 뷰: 종류별 행(사용자/어시스턴트/도구/결과 + 서브에이전트) × 시간 축.
  * 각 이벤트는 시각에 비례한 x 좌표의 점으로 표시. hover 시 preview 표시.
  */
 /** 사용자가 고를 수 있는 시간 축 간격. "auto"는 균등 6분할(이전 동작). */
@@ -39,6 +39,10 @@ const INTERVAL_MS: Record<Exclude<IntervalChoice, "auto">, number> = {
   "20m": 20 * 60_000,
 };
 
+/**
+ * 세션 이벤트의 시간축 swim-lane 뷰. 종류별 레인 + 시간 격자.
+ * React.lazy 동적 import — default export 유지.
+ */
 export default function SessionSwimLaneView({
   events,
   stats,
@@ -75,7 +79,7 @@ export default function SessionSwimLaneView({
   const lanes = hasSidechain
     ? [
         ...SWIM_LANES,
-        { key: "_sidechain" as const, label: "사이드체인", fill: "fill-violet-500" },
+        { key: "_sidechain" as const, label: "서브에이전트", fill: "fill-violet-500" },
       ]
     : SWIM_LANES;
   const height = pad.t + lanes.length * laneH + pad.b;
