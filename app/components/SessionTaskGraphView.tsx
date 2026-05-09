@@ -27,7 +27,11 @@ export default function SessionTaskGraphView({
   const { data, isLoading, error } = useQuery({
     queryKey: ["session-tasks-events", sessionId],
     queryFn: () => fetchSessionTasks(sessionId, true),
-    staleTime: 30_000,
+    // 다른 세션 뷰들과 같은 5초 폴링. 서버 측 replay-task-timeline 캐시가 fingerprint 기반이라 변경 없으면 즉시 반환.
+    refetchInterval: 5_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+    staleTime: 0,
   });
   const events = data?.events ?? [];
   const layout = useMemo(() => buildLayout(events), [events]);
