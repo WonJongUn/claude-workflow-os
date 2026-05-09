@@ -147,6 +147,19 @@ import { Tooltip } from "@/app/components/ui";
 
 뱃지·아이콘 종류별 라벨·툴팁 문구는 **한 곳에서만** 정의한다 (`app/components/session-log-shared.ts`의 `KIND_LABEL`, `KIND_TOOLTIP`, `SPAN_KIND_TOOLTIP` 처럼). 새 뷰가 같은 종류의 뱃지를 그릴 때 그 표를 import해 의미가 갈라지지 않게 한다.
 
+서브에이전트(사이드체인) 표시는 `app/components/SidechainBadge.tsx` 컴포넌트를 import해서만 사용한다 — Tooltip + `Badge variant="subagent"`(violet) + `whitespace-nowrap`이 한 묶음. raw `<span>`/inline 스타일/다른 variant 금지. UI 문자열은 항상 "서브에이전트", 코드 식별자(`isSidechain`/`sidechain`)는 Claude Code jsonl 필드 그대로 유지.
+
+Badge variant 표:
+
+| variant | 톤 | 용도 |
+|---|---|---|
+| `default` | zinc | 중립 라벨 |
+| `success` | emerald | 완료/성공 |
+| `warning` | amber | 주의/대기 (`결과` 등) |
+| `danger` | red | 에러/실패 |
+| `info` | sky | 정보/사용자 |
+| `subagent` | violet | 서브에이전트 전용. amber와 충돌하지 않도록 별도 톤. |
+
 ### 검토 체크리스트
 
 PR 리뷰 시:

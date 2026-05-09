@@ -10,10 +10,11 @@ Local control plane for [Claude Code](https://docs.claude.com/claude-code). Run 
 
 - **Multi-project switcher** — register any folder containing a `.claude/` directory. Sessions, agents, skills, and settings are scoped per project.
 - **Live session viewer** — every Claude Code session JSONL is parsed and surfaced as Tasks · Conversation · Edited files · Timeline · Trace · Swimlane · Stats · Raw views. Tasks update in real time over SSE.
+- **Subagent integration** — Claude Code stores subagent (Agent/Task tool) work in separate `<sessionId>/subagents/agent-*.jsonl` files. The viewer merges them with the main jsonl, nests subagent tool chains under their parent Agent in the Trace view, and tags them with a violet "서브에이전트" badge across Timeline / Conversation / Edited Files. Filter tabs split per-source (main / subagent / all).
 - **Ticket kanban** — `OPEN → IN_PROGRESS → REVIEW → DONE` with `blocked` / `blockedReason`. Tickets are plain JSON files in `tickets/`, easy to inspect or hand-edit.
 - **Web Push** — get a browser/OS notification when a ticket enters `REVIEW` or an in-progress ticket is marked `blocked`. Works while the tab is closed.
 - **Notification center** — every mutation (ticket transition, project create, session resume, …) emits a categorized notification. Click to deep-link back to the relevant page.
-- **Built-in monitoring** — `/api/metrics` exposes Prometheus exposition; `/monitoring` page renders self-hosted charts (CPU, RSS, event-loop lag, per-route p99 latency, request rate, cache hit rate) without Grafana.
+- **Built-in monitoring** — `/api/metrics` exposes Prometheus exposition; `/monitoring` page renders self-hosted charts (CPU, RSS, event-loop lag, per-route p99 latency, request rate, cache hit rate) without Grafana. Hover crosshair, legend solo-toggle, and HELP-text tooltips on metric titles.
 - **Server health overlay** — every page polls `/api/health`; if the server stops responding, the UI dims with a clear "reconnect" prompt.
 - **URL is the view-state truth** — active project, tab, highlighted task all live in `?project=` / `?tab=` / `?taskId=`. Bookmarks, deep links, and the back button all just work.
 
@@ -97,7 +98,9 @@ docs/rules/             # architecture rules — read these before contributing
 - **Single source of truth per concern.** Tickets in `lib/ticket-store.ts`. Push in `lib/web-push.ts`. SSE bus in `lib/session-watcher.ts`. No cross-imports.
 - **URL is the view-state truth.** No `localStorage` for tabs / projects / highlights. `useSearchParams` reads, `router.replace` writes.
 - **TanStack Query is the client cache.** SSE events merge via `setQueryData`, never trigger a refetch.
-- **mtime-based caches.** Anything reading from `~/.claude/**` is keyed by `(path, mtimeMs, size)` through `createCache(name)`. Hit / miss / size flow into Prometheus automatically.
+- **mtime-based caches.** Anything reading from `~/.claude/**` is keyed through `createCache(name)`. Single-file caches use `(path, mtimeMs, size)`; bundled session caches use a fingerprint over all member files. Hit / miss / size flow into Prometheus automatically.
+- **Conditional GET (304).** Large session bodies use `ETag = "<schemaVersion>-<hash>"`. Browsers revalidate; server returns 304 with no body when unchanged. Bumping `schemaVersion` busts client cache when response shape evolves.
+- **Subagent bundle.** `readSessionBundle(mainPath)` concatenates main jsonl + every `<id>/subagents/agent-*.jsonl` and returns one body + fingerprint. Parsers must sort by `ts` (file order ≠ chronological).  `buildSubagentParentMap` resolves agent → parent Agent tool_use_id via promptId + meta.json description (no fragile text matching).
 - **Metrics endpoint exposes** Node defaults + `http_request_duration_seconds` histogram + per-route counters + `cache_*` per named cache.
 
 For full conventions read [`docs/rules/`](./docs/rules/) — start with [`api.md`](./docs/rules/api.md), [`components.md`](./docs/rules/components.md), and [`performance.md`](./docs/rules/performance.md).

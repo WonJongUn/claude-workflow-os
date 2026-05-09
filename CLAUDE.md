@@ -86,7 +86,11 @@
 - **API 인스트루멘트**: 모든 `/api/*` 라우트는 `withMetrics(routePattern, handler)`로 wrap. → `docs/rules/api.md`
 - **세션 식별자**: `?sessionId=` (UUID) 단일 키, `?path=` 금지. → `docs/rules/api.md`
 - **알림**: `notify({ category, href, ... })` 둘 다 필수. → `docs/rules/design.md`, `docs/rules/components.md`
-- **ETag/304**: 큰 응답은 `mtimeMs-size` ETag로 304. → `docs/rules/performance.md`
+- **ETag/304**: 큰 응답은 `<schemaVer>-<mtime+size hash>` ETag로 304. 응답 shape이 바뀌면 schema 버전 bump해 캐시 무효화. → `docs/rules/performance.md`
+- **세션 본문 = 메인 + 서브에이전트 합본**: `lib/sessions.ts`의 `readSessionBundle(mainPath)`이 메인 jsonl + `<sessionId>/subagents/agent-*.jsonl`을 묶어 한 본문 + fingerprint로 반환. 모든 파서/뷰는 합본을 가정 (단, line 순서 ≠ 시간순이라 ts로 정렬 필수). 서브에이전트→Agent tool_use_id 매핑은 `buildSubagentParentMap` (promptId+description).
+- **용어**: UI 표시는 항상 "서브에이전트". 코드 식별자(필드명·prop)는 Claude Code jsonl 그대로 `isSidechain`/`sidechain` 유지. 신규 UI 문자열에 "사이드체인" 금지.
+- **공통 표시 컴포넌트**: 서브에이전트 표시는 `app/components/SidechainBadge.tsx` 단일 진입점 + `Badge` primitive의 `subagent`(violet) variant. raw text/inline 스타일 금지. → `docs/rules/components.md`
+- **session-watcher**: 메인 jsonl만 tail (의도). 서브에이전트는 read-time bundling으로 처리해 알림 sessionId가 망가지지 않게 한다.
 
 ## 디렉토리 구조
 

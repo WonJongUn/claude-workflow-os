@@ -19,6 +19,7 @@ zinc/slate 스케일을 기본으로 한다. 의미 색은 다음만 허용.
 | success | `text-emerald-600` | `dark:text-emerald-300` |
 | warning | `text-amber-600` | `dark:text-amber-300` |
 | info | `text-sky-600` | `dark:text-sky-300` |
+| 서브에이전트 | `text-violet-600 bg-violet-50 border-violet-200` | `dark:text-violet-300 dark:bg-violet-950 dark:border-violet-900` |
 
 `Badge`의 `variant`가 이 의미 매핑의 단일 소스. 컴포넌트에서 의미 색을 직접 칠하지 말고 `<Badge variant="...">` 또는 프리미티브 사용.
 
@@ -154,6 +155,15 @@ useQuery({
 - 트리거 위치는 컴포넌트가 아닌 도메인 훅 (`useCreateProject`, `useSaveEntry` 등) — 호출자에 코드 없이 일관된 알림.
 - `notify({ category, href, ... })`에 카테고리(`task`/`session`/`ticket`/`project`/`settings`/`system`)와 클릭 시 이동 경로를 반드시 부여한다. 패널에서 카테고리 탭으로 필터링하고 클릭으로 라우팅된다.
 - 카테고리 탭은 항상 모두 표시(0건도 흐리게), 정렬은 개수 내림차순이며 "전체"가 첫 번째.
+
+## 서브에이전트 표시
+
+서브에이전트(Claude Code의 Task/Agent 도구로 spawn된 보조 에이전트)는 모든 뷰에서 동일한 시각 언어로 구분한다.
+
+- 색: violet (좌측 가이드 + 뱃지). 다른 의미 색(amber/sky/red 등)과 충돌 안 하도록 별도 톤.
+- 라벨: 항상 **"서브에이전트"**. "사이드체인" 등 영문/기술 용어 금지 (코드 식별자 `isSidechain`/`sidechain`은 jsonl 필드라 유지).
+- 사용 컴포넌트: `app/components/SidechainBadge.tsx` (Tooltip + `Badge variant="subagent"` + nowrap) 단일 진입점.
+- 적용 대상: Timeline 행, 대화 turn, 편집 파일 행, Trace V1/V2 라벨, SwimLane 레인. 새 뷰가 추가되면 같은 패턴 따른다.
 
 ## 절대 위치 / 차트 축 라벨
 

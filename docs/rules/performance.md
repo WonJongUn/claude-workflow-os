@@ -57,19 +57,26 @@ UI는 즉각 반응해야 한다. 큰 비용은 측정하고 의도적으로 지
 반복 호출이 많은 disk IO/파싱은 `lib/cache.ts`의 `createCache(name)`을 사용한다.
 
 - 자체 `Map`으로 인라인 캐시 만들지 말 것 — 메트릭(`cache_hits_total`, `cache_misses_total`, `cache_size`)이 누락된다.
-- invalidation 키는 **mtime+size** 조합을 권장. jsonl처럼 append-only면 mtime만으로도 충분히 안전.
+- invalidation 키는 **mtime+size** 조합을 권장. jsonl처럼 append-only면 mtime만으로도 안전.
+- **여러 파일이 한 응답에 합쳐지는 경우(세션 메인 + 서브에이전트 등)**는 단일 파일 mtime/size로 부족. `readSessionBundle`처럼 모든 구성 파일의 `(path, mtime, size)`를 정렬해 직렬화한 **fingerprint** 문자열을 키로 쓴다.
 - TTL 기반 캐시는 stale을 허용해 도메인이 깨질 수 있으니, 가능하면 mtime 기반으로.
 - 캐시 이름은 `kebab-case`로 모듈 단위 유일하게 (`replay-task-timeline`, `runtime-statuses` 등). 같은 이름을 여러 인스턴스가 공유하면 메트릭이 합산된다.
 - **Eviction 주의**: 외부에서 파일이 삭제되면 mtime 기반 캐시는 stat 실패로 stale 엔트리를 갖게 된다. 영구 누적이 우려되면 stat 실패 분기에서 `cache.delete(key)` 호출하거나, 주기적으로 prune.
 
 ### 304 Not Modified
 
-큰 응답(jsonl 본문 등)을 5초마다 다시 보내는 라우트는 `ETag = "<mtimeMs>-<size>"` 헤더를 단다. 클라(브라우저)가 자동으로 `If-None-Match`를 보내고, 일치하면 서버는 본문 없이 `304`로 응답한다. 캐시 키와 동일하므로 stale 위험 0.
+큰 응답(jsonl 본문 등)을 5초마다 다시 보내는 라우트는 ETag로 304 처리한다. 클라(브라우저)가 자동으로 `If-None-Match`를 보내고, 일치하면 서버는 본문 없이 `304`로 응답한다.
+
+ETag 형식: **`"<schemaVersion>-<contentHash>"`**
+
+- `schemaVersion`은 응답 JSON shape이 바뀔 때 bump한다 (예: `v1` → `v2`). 그러면 브라우저가 가지고 있던 옛 etag와 매치되지 않아 새 본문을 받게 된다 — shape 변경 시 캐시 자동 무효화.
+- `contentHash`는 본문 fingerprint(파일 mtime+size 합산 해시 등)에서 파생. 파일이 변하면 자동 무효화.
 
 ```ts
-const etag = `"${stat.mtimeMs}-${stat.size}"`;
+const SCHEMA_VERSION = "v2"; // 응답 shape 바뀔 때 bump
+const etag = `"${SCHEMA_VERSION}-${hashString(bundle.fingerprint)}"`;
 if (request.headers.get("if-none-match") === etag) {
-  return new Response(null, { status: 304, headers: { etag } });
+  return new Response(null, { status: 304, headers: { etag, "cache-control": "private, max-age=0, must-revalidate" } });
 }
 ```
 
@@ -88,6 +95,15 @@ return result;
 - 같은 디렉토리의 여러 파일을 처리할 땐 `Promise.all`로 병렬화. for 루프 안 직렬 stat/readFile은 N×latency.
 - `fs.readdir({ withFileTypes: true })`로 한 번에 메타데이터 + 디렉토리 구분.
 - 모든 프로젝트 디렉토리를 매 요청마다 스캔하는 패턴은 캐시 후보 (`runtime-statuses`, `session-path`).
+
+## 합본 본문의 시간 정렬
+
+세션 본문은 메인 jsonl 뒤에 서브에이전트 jsonl을 파일 순서로 concat한 결과 (`readSessionBundle`)라 **라인 순서가 시간순이 아니다**. 시간순 가정을 하는 모든 파서/뷰는 파싱 후 ts로 정렬해야 한다.
+
+- `parseLog` (SessionLogView): ts ASC, ts 없는 라인은 안정 정렬.
+- `parseConversation`: ts DESC (최신이 위).
+- `buildTrace` (V2): ts ASC, 그 위에서 turn 경계 결정.
+- 카운터/스트림 상태 머신(replay 등)은 사이드체인 라인을 skip해야 id 충돌이 없음 (`replaySessionTaskTimeline`).
 
 ## 금지
 
