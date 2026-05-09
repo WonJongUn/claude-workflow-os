@@ -4,6 +4,7 @@ import type { Ticket, TicketStatus } from "@/lib/types";
 import { Badge, Button } from "./ui";
 import { PRIORITY_VARIANT } from "./ticket-meta";
 
+/** TicketCard와 내부 TicketActions가 공유하는 Props. */
 export type TicketCardProps = {
   /** 표시할 티켓. 부모 캐시에서 내려준다. */
   ticket: Ticket;
@@ -13,6 +14,10 @@ export type TicketCardProps = {
   onToggleBlocked: (ticket: Ticket) => void;
 };
 
+/**
+ * 보드 컬럼 안의 티켓 한 장. 상태별 액션 버튼을 같이 그린다.
+ * 캐시 갱신과 알림은 호출자(보드)의 도메인 훅이 담당 — 이 컴포넌트는 콜백만.
+ */
 export function TicketCard({
   ticket,
   onTransition,

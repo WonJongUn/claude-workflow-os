@@ -12,6 +12,7 @@ import { parse as yamlParse, stringify as yamlStringify } from "yaml";
  */
 export type FrontmatterValue = string | string[] | number | boolean;
 
+/** parseFrontmatter의 결과. 프론트매터가 없거나 깨졌으면 frontmatter는 빈 객체. */
 export type ParsedDocument = {
   /** 프론트매터 키-값. 없으면 빈 객체. */
   frontmatter: Record<string, FrontmatterValue>;

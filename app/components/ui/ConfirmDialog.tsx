@@ -25,6 +25,10 @@ type ConfirmDialogProps = {
   onCancel: () => void;
 };
 
+/**
+ * 확인 다이얼로그. 파괴적 작업(삭제 등)에는 variant="danger"로.
+ * onCancel은 백드롭/ESC/취소 버튼 모두에서 호출된다.
+ */
 export function ConfirmDialog({
   open,
   title,

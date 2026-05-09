@@ -1,3 +1,4 @@
+/** 알림 시각/의미 레벨. 토스트 색·아이콘과 사운드 결정. */
 export type NotificationLevel = "success" | "error" | "info";
 
 /**
@@ -17,6 +18,7 @@ export type NotificationCategory =
   | "settings"
   | "system";
 
+/** 알림 한 건. 도메인 훅(useNotify)이 만들고 ToastStack/NotificationBell이 렌더. */
 export type Notification = {
   /** 자동 생성 식별자. */
   id: string;

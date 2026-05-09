@@ -18,6 +18,7 @@ type AddProjectButtonProps = {
   onCreated: (project: Project) => void;
 };
 
+/** 프로젝트 추가 다이얼로그를 여는 버튼. 폴더 피커와 이름 입력을 한 모달에 묶는다. */
 export function AddProjectButton({ onCreated }: AddProjectButtonProps) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");

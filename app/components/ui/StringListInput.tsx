@@ -14,6 +14,10 @@ type StringListInputProps = {
   placeholder?: string;
 };
 
+/**
+ * 문자열 배열 편집기. 항목별 input + 우측 ✕ 삭제, 하단에 추가 input.
+ * 빈 문자열 항목은 add 단계에서 trim으로 거르되, 기존 항목의 빈 값은 유지(사용자 의도 존중).
+ */
 export function StringListInput({
   value,
   onChange,

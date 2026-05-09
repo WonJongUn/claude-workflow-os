@@ -52,6 +52,10 @@ const INITIAL: FormState = {
   references: [],
 };
 
+/**
+ * 새 티켓 생성 폼. 활성 프로젝트의 에이전트 목록을 함께 가져와 select에 채운다.
+ * 성공 시 onClose 호출, 실패 시 onError로 메시지 전달 (모달에서 표시).
+ */
 export function NewTicketForm({ onClose, onError }: NewTicketFormProps) {
   const [form, setForm] = useState<FormState>(INITIAL);
   const { create, isPending } = useCreateTicket();

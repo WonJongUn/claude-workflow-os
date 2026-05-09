@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Badge } from "./Badge";
 
+/** 보드 컬럼 표면. 제목 + 카운트 뱃지 + 자식 카드들 세로 스택. */
 export function Column({
   title,
   count,

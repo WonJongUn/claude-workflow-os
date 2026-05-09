@@ -15,6 +15,7 @@ type TicketColumnProps = {
   onToggleBlocked: (ticket: Ticket) => void;
 };
 
+/** 한 상태에 해당하는 티켓들을 한 컬럼으로 모아 그린다. 빈 컬럼은 자리표시. */
 export function TicketColumn({
   title,
   tickets,

@@ -1,7 +1,13 @@
 import type { ButtonHTMLAttributes } from "react";
 import { cn } from "./cn";
 
+/**
+ * Button 시각 의도. design.md "버튼 변형":
+ * primary=주요 CTA, ghost=보조(테두리만), danger=파괴적 confirm.
+ */
 export type ButtonVariant = "primary" | "ghost" | "danger";
+
+/** Button 높이/패딩 토큰. sm은 표 내부 인라인 액션, md는 폼/모달 기본. */
 export type ButtonSize = "sm" | "md";
 
 const variantClasses: Record<ButtonVariant, string> = {
@@ -23,6 +29,10 @@ type Props = ButtonHTMLAttributes<HTMLButtonElement> & {
   size?: ButtonSize;
 };
 
+/**
+ * 표준 버튼. 자식은 `<Icon /> <span>라벨</span>` 두 자식이 기본 (gap-1.5 자동).
+ * 인라인 미니 토글에는 사용하지 않는다 (직접 button + class).
+ */
 export function Button({
   variant = "primary",
   size = "md",

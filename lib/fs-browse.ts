@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+/** 디렉토리 한 항목. DirectoryPicker UI가 행 단위로 렌더한다. */
 export type DirEntry = {
   /** 파일/디렉토리 이름. */
   name: string;
@@ -9,6 +10,7 @@ export type DirEntry = {
   isDir: boolean;
 };
 
+/** browseDirectory의 결과. DirectoryPicker UI 한 화면 분량. */
 export type DirListing = {
   /** 정규화된 절대 경로. */
   path: string;
@@ -64,4 +66,5 @@ function byDirThenName(a: DirEntry, b: DirEntry): number {
   return a.name.localeCompare(b.name);
 }
 
+/** 경로 미존재 또는 파일(non-dir)일 때 throw. 라우트는 400으로 매핑. */
 export { InvalidPathError };

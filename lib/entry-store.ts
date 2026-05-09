@@ -2,6 +2,10 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { getProject } from "./project-store";
 
+/**
+ * 사용자 정의 컨텍스트 항목 종류.
+ * agent는 평탄 파일, skill은 디렉토리 + SKILL.md 형식 (Claude Code 규약).
+ */
 export type EntryKind = "agent" | "skill";
 
 class EntryNotFoundError extends Error {}
@@ -99,4 +103,5 @@ export async function deleteEntry(input: {
   }
 }
 
+/** 엔트리 미존재 시 throw. 라우트는 404로 매핑. */
 export { EntryNotFoundError, InvalidEntryNameError };

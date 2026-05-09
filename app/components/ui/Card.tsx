@@ -3,6 +3,7 @@ import { cn } from "./cn";
 
 type DivProps = HTMLAttributes<HTMLDivElement>;
 
+/** 모서리·테두리·그림자만 있는 표면 컨테이너. CardHeader/CardBody와 함께 조합. */
 export function Card({ className, children, ...rest }: DivProps) {
   return (
     <div
@@ -17,6 +18,7 @@ export function Card({ className, children, ...rest }: DivProps) {
   );
 }
 
+/** Card 상단 헤더. 왼쪽 제목·오른쪽 액션 정렬용 (justify-between 기본). */
 export function CardHeader({ className, children, ...rest }: DivProps) {
   return (
     <div
@@ -31,6 +33,7 @@ export function CardHeader({ className, children, ...rest }: DivProps) {
   );
 }
 
+/** Card 제목용 h2. 시각 무게는 design.md "카드 제목" 토큰. */
 export function CardTitle({
   className,
   children,
@@ -50,6 +53,7 @@ export function CardTitle({
   );
 }
 
+/** Card 본문 영역. 리스트가 컨테이너 폭을 채우려면 className="p-0"으로 패딩 제거. */
 export function CardBody({ className, children, ...rest }: DivProps) {
   return (
     <div className={cn("px-4 py-4", className)} {...rest}>

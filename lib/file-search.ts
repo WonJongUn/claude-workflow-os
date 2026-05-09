@@ -17,6 +17,7 @@ const IGNORED_DIRS = new Set([
 
 const MAX_TRAVERSE = 5000;
 
+/** searchFiles의 결과 한 건. ReferencesInput @ 자동완성에서 소비. */
 export type FileHit = {
   /** searchRoot 기준 상대 경로. UI 표시용. */
   relative: string;

@@ -17,6 +17,7 @@ type ProjectTabsProps = {
   onSelect: (id: string) => void;
 };
 
+/** 상단 프로젝트 탭 바. ALL 탭은 항상 첫 번째이며 삭제·편집 버튼이 표시되지 않는다. */
 export function ProjectTabs({
   projects,
   activeId,
@@ -143,4 +144,5 @@ function ProjectTab({
   );
 }
 
+/** 편의 재export — 사이드바가 ProjectTabs와 같이 가져갈 수 있게. */
 export { AddProjectButton };

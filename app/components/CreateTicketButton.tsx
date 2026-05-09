@@ -5,6 +5,7 @@ import { FilePlus2 } from "lucide-react";
 import { Button, Modal } from "./ui";
 import { NewTicketForm } from "./NewTicketForm";
 
+/** "새 티켓" CTA 버튼 + NewTicketForm 모달 묶음. 보드 헤더에서 사용. */
 export function CreateTicketButton() {
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);

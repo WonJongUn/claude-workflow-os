@@ -7,6 +7,7 @@ import {
 } from "./schemas";
 import type { z } from "zod";
 
+/** lib/schemas.ts의 EntryKindSchema에서 추론. lib/entry-store의 EntryKind와 같다. */
 export type EntryKind = z.infer<typeof EntryKindSchema>;
 
 /** 검증 결과: ok이면 frontmatter/본문, 아니면 사람 읽기용 issues. */

@@ -10,6 +10,11 @@ import type {
 } from "./types";
 import { notifySubscribers } from "./web-push";
 
+/**
+ * 인-프로세스 티켓 이벤트 버스. SSE 라우트(`app/api/sse/route.ts`)가
+ * 유일한 구독자다. store와 SSE 사이의 단일 시임 — 다른 모듈은 이 emitter에
+ * 직접 emit하지 않는다 (push는 store가 처리). 이벤트 페이로드는 `TicketEvent`.
+ */
 export const ticketEvents = new EventEmitter();
 
 const ALLOWED_TRANSITIONS: Record<TicketStatus, readonly TicketStatus[]> = {

@@ -46,6 +46,10 @@ async function setupPush(): Promise<void> {
   await registerPushSubscription(sub.toJSON());
 }
 
+/**
+ * mount 시 1회 Service Worker 등록 + Web Push 구독 시도. 실패는 콘솔 경고만 (UI 영향 없음).
+ * 렌더링 결과 없음 — side-effect-only 컴포넌트.
+ */
 export function PushSetup() {
   useEffect(() => {
     setupPush().catch((err: unknown) => {

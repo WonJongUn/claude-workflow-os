@@ -166,4 +166,10 @@ function generateId(): string {
   return `P-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
+/**
+ * 도메인 에러. 라우트는 errorStatus 헬퍼로 HTTP 상태에 매핑한다:
+ * - ProjectNotFoundError → 404
+ * - ProtectedProjectError → 409 (ALL 탭 보호)
+ * - DuplicateProjectError → 409 (같은 claudeRoot 중복)
+ */
 export { ProjectNotFoundError, ProtectedProjectError, DuplicateProjectError };

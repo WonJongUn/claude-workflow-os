@@ -26,6 +26,10 @@ const SIZE_CLASS: Record<NonNullable<ModalProps["size"]>, string> = {
   xl: "max-w-5xl",
 };
 
+/**
+ * 포털 기반 모달. ESC/백드롭 클릭으로 닫히고 body 스크롤 잠금.
+ * 모달 안에 모달을 띄우지 않는다 (UX 규칙) — 보조 화면은 같은 모달의 모드 전환으로.
+ */
 export function Modal({
   open,
   onClose,
