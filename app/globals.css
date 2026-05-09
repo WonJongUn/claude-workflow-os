@@ -19,8 +19,221 @@
   }
 }
 
+html,
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+  /* macOS 러버밴드 스크롤로 빈 공간이 보이지 않도록 한다. */
+  overscroll-behavior-y: none;
+}
+
+/*
+ * Tailwind v4 preflight는 button/[role=button]/a 등에 cursor:pointer를 자동으로 적용하지 않는다.
+ * 인터랙티브 요소는 클릭 가능함을 시각적으로 알리는 게 정상 기대치이므로 전역으로 부여한다.
+ * disabled/aria-disabled는 not-allowed로 명확히 차단.
+ */
+button:not(:disabled):not([aria-disabled="true"]),
+[role="button"]:not([aria-disabled="true"]),
+a[href],
+summary,
+label[for],
+select:not(:disabled),
+input[type="checkbox"]:not(:disabled),
+input[type="radio"]:not(:disabled) {
+  cursor: pointer;
+}
+button:disabled,
+[aria-disabled="true"],
+input:disabled,
+select:disabled {
+  cursor: not-allowed;
+}
+
+/* 콘텐츠와 겹치지 않는 얇고 일관된 스크롤바.
+ * 스크롤바 영역(거터)을 항상 예약해서 갱신/리사이즈 시 레이아웃 흔들림도 방지한다. */
+.scroll-thin {
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(113, 113, 122, 0.4) transparent;
+}
+.scroll-thin::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.scroll-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scroll-thin::-webkit-scrollbar-thumb {
+  background: rgba(113, 113, 122, 0.35);
+  border-radius: 4px;
+}
+.scroll-thin::-webkit-scrollbar-thumb:hover {
+  background: rgba(113, 113, 122, 0.6);
+}
+
+/* 스크롤은 가능하지만 스크롤바 자체는 보이지 않는 변형. 가로 탭 등에 사용. */
+.scroll-hidden {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none;
+}
+.scroll-hidden::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  background: transparent !important;
+}
+
+/* 토스트 슬라이드 인/아웃. 우측에서 등장, 우측으로 사라짐. */
+@keyframes toast-in {
+  from {
+    transform: translateX(110%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+@keyframes toast-out {
+  from {
+    transform: translateX(0);
+    opacity: 1;
+  }
+  to {
+    transform: translateX(110%);
+    opacity: 0;
+  }
+}
+.animate-toast-in {
+  animation: toast-in 200ms ease-out;
+}
+.animate-toast-out {
+  animation: toast-out 220ms ease-in forwards;
+}
+
+/* 세션 대화 마크다운: typography 플러그인 없이 가독성 있는 기본 스타일. */
+.prose-conversation p {
+  margin: 0.4em 0;
+}
+.prose-conversation p:first-child {
+  margin-top: 0;
+}
+.prose-conversation p:last-child {
+  margin-bottom: 0;
+}
+.prose-conversation h1,
+.prose-conversation h2,
+.prose-conversation h3,
+.prose-conversation h4 {
+  font-weight: 600;
+  margin: 0.6em 0 0.3em;
+}
+.prose-conversation h1 { font-size: 1.05em; }
+.prose-conversation h2 { font-size: 1em; }
+.prose-conversation h3 { font-size: 0.95em; }
+.prose-conversation ul,
+.prose-conversation ol {
+  margin: 0.4em 0;
+  padding-left: 1.4em;
+}
+.prose-conversation ul { list-style: disc; }
+.prose-conversation ol { list-style: decimal; }
+.prose-conversation li { margin: 0.15em 0; }
+.prose-conversation code {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  background: rgba(113, 113, 122, 0.12);
+  border-radius: 3px;
+  padding: 0.05em 0.3em;
+  font-size: 0.9em;
+}
+.prose-conversation pre {
+  border-radius: 6px;
+  overflow: auto;
+  margin: 0.5em 0;
+  font-size: 0.85em;
+  line-height: 1.5;
+  /* 코드 블록 자체 배경은 highlight.js .hljs 클래스가 관리. 펜스 없는 경우 fallback. */
+  background: rgba(113, 113, 122, 0.08);
+  padding: 0.6em 0.8em;
+}
+.prose-conversation pre:has(code.hljs) {
+  /* highlight.js가 .hljs에 padding/배경을 적용하므로 외곽 padding은 제거 */
+  padding: 0;
+  background: transparent;
+}
+.prose-conversation pre code:not(.hljs) {
+  background: transparent;
+  padding: 0;
+  font-size: inherit;
+}
+.prose-conversation pre code.hljs {
+  display: block;
+  padding: 0.6em 0.8em;
+  border-radius: 6px;
+  font-size: inherit;
+  /* 색·배경은 highlight.js 테마(github.css)가 결정. 우리 규칙으로 덮지 않는다. */
+}
+/* 다크 모드에서는 light 테마가 너무 밝아 보이므로 토큰 색을 다크 친화적으로 보정. */
+.dark .prose-conversation pre code.hljs {
+  background: #0d1117;
+  color: #c9d1d9;
+}
+.dark .prose-conversation .hljs-keyword,
+.dark .prose-conversation .hljs-built_in,
+.dark .prose-conversation .hljs-type {
+  color: #ff7b72;
+}
+.dark .prose-conversation .hljs-string,
+.dark .prose-conversation .hljs-attr {
+  color: #a5d6ff;
+}
+.dark .prose-conversation .hljs-number,
+.dark .prose-conversation .hljs-literal {
+  color: #79c0ff;
+}
+.dark .prose-conversation .hljs-comment {
+  color: #8b949e;
+}
+.dark .prose-conversation .hljs-title,
+.dark .prose-conversation .hljs-function,
+.dark .prose-conversation .hljs-name {
+  color: #d2a8ff;
+}
+.dark .prose-conversation .hljs-variable,
+.dark .prose-conversation .hljs-tag {
+  color: #ffa657;
+}
+.prose-conversation blockquote {
+  border-left: 3px solid rgba(113, 113, 122, 0.4);
+  padding: 0.05em 0.8em;
+  margin: 0.5em 0;
+  color: rgba(82, 82, 91, 0.9);
+}
+.prose-conversation a {
+  color: rgb(2 132 199);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.dark .prose-conversation a {
+  color: rgb(56 189 248);
+}
+.prose-conversation table {
+  border-collapse: collapse;
+  margin: 0.5em 0;
+  font-size: 0.9em;
+}
+.prose-conversation th,
+.prose-conversation td {
+  border: 1px solid rgba(113, 113, 122, 0.3);
+  padding: 0.3em 0.6em;
+}
+.prose-conversation th {
+  background: rgba(113, 113, 122, 0.08);
+  font-weight: 600;
+}
+.prose-conversation hr {
+  border: 0;
+  border-top: 1px solid rgba(113, 113, 122, 0.3);
+  margin: 0.8em 0;
 }
