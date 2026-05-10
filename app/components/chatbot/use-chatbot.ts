@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { subscribeSse } from "@/app/components/sse-bus";
 
 /** 챗봇 한 메시지의 단일 컨텐츠 블록. 텍스트 또는 도구 호출 요약. */
 export type ChatBlock =
@@ -52,8 +53,9 @@ const PROJECT_KEY = "chatbot:projectId";
  *
  * 통신 흐름:
  * - send: POST /api/chat → 첫 sessionId가 도착하면 즉시 응답. 본 처리는 백그라운드 spawn.
- * - 표시: 채팅 뷰에 진입하면 EventSource(/api/chat/sse?sessionId=…)를 항상 구독.
- *   서버는 `init` 이벤트로 현재 turn 스냅샷을 한 번 보내고, 이후 start/text/tool/end를 push.
+ * - 표시: 채팅 뷰 진입 시 /api/chat/history로 history + 현재 turn 스냅샷을 한 번 받고,
+ *   이후 단일 SSE 채널(/api/sse, topic=chat)을 sse-bus로 구독해 라이브 토큰을 받는다.
+ *   별도 SSE 라우트를 만들지 않는다 — 브라우저 6 connection 슬롯 잠식을 막기 위해.
  * - 모든 탭이 동일 경로를 사용 — 보낸 탭/다른 탭 구분 없음. 폴링 없이 실시간.
  * - 리스트 인디케이터는 /api/chat/active 폴링으로 진행 중 세션 id 집합 유지.
  */
@@ -164,6 +166,7 @@ export function useChatbot(): {
             text: string;
             toolCalls: { name: string; filePath?: string }[];
           }>;
+          turn?: { userText: string; blocks: ChatBlock[] } | null;
         };
         const restored: ChatMessage[] = data.messages.map((m, i) => {
           const blocks: ChatBlock[] = [];
@@ -198,12 +201,45 @@ export function useChatbot(): {
             });
           }
         }
+        // 진행 중 turn이 있으면 active overlay에 hydrate (SSE init 역할).
+        if (data.turn) {
+          const snap = data.turn;
+          setActive((prev) => {
+            // 자기 탭이 직접 send 중이면 그 overlay 유지 (블록 누적 차이가 더 정확).
+            if (prev) return prev;
+            return {
+              key: `${currentProjectFor(sessionId)}:${sessionId}`,
+              userMsg: {
+                id: `u-${Date.now()}`,
+                role: "user",
+                blocks: [{ kind: "text", text: snap.userText }],
+              },
+              assistantMsg: {
+                id: `a-${Date.now()}`,
+                role: "assistant",
+                blocks: snap.blocks,
+                pending: true,
+              },
+            };
+          });
+        }
       } finally {
         if (opts?.showLoading !== false) setIsHistoryLoading(false);
       }
     },
     [],
   );
+
+  /** sessionId가 속한 view의 projectId를 가져오는 보조 — fetchHistory 내부 hydrate용. */
+  const currentProjectFor = (sessionId: string): string => {
+    const v = viewRef.current;
+    if (v.kind === "chat" && v.sessionId === sessionId) return v.projectId;
+    return sessions.find((s) => s.id === sessionId)?.projectId ?? "";
+  };
+  const viewRef = useRef(view);
+  useEffect(() => {
+    viewRef.current = view;
+  }, [view]);
 
   const openSession = useCallback(
     async (sessionId: string, projectId: string) => {
@@ -374,9 +410,6 @@ export function useChatbot(): {
     const sid = view.sessionId;
     const projectId = view.projectId;
     const key = `${projectId}:${sid}`;
-    const es = new EventSource(
-      `/api/chat/sse?sessionId=${encodeURIComponent(sid)}`,
-    );
 
     const ensureUserMsg = (snapText: string): ChatMessage => ({
       id: `u-${Date.now()}`,
@@ -390,123 +423,77 @@ export function useChatbot(): {
       pending: true,
     });
 
-    es.addEventListener("init", (ev) => {
-      try {
-        const snap = JSON.parse(
-          (ev as MessageEvent).data,
-        ) as { userText: string; blocks: ChatBlock[] } | null;
-        if (!snap) {
-          setActive((prev) => (prev && prev.key === key ? null : prev));
-          return;
-        }
-        setActive((prev) => {
-          if (prev && prev.key === key) {
-            return {
-              ...prev,
-              assistantMsg: {
-                ...prev.assistantMsg,
-                blocks: snap.blocks,
-                pending: true,
-              },
-            };
-          }
-          return {
-            key,
-            userMsg: ensureUserMsg(snap.userText),
-            assistantMsg: {
-              ...emptyAssistant(),
-              blocks: snap.blocks,
-            },
-          };
-        });
-      } catch {
-        // ignore
-      }
-    });
+    type ChatEnv =
+      | { topic: "chat"; sessionId: string; type: "start"; userText: string }
+      | { topic: "chat"; sessionId: string; type: "text"; text: string }
+      | { topic: "chat"; sessionId: string; type: "tool"; name: string; summary: string }
+      | { topic: "chat"; sessionId: string; type: "end" };
 
-    es.addEventListener("start", (ev) => {
-      try {
-        const data = JSON.parse((ev as MessageEvent).data) as {
-          userText: string;
-        };
+    const unsub = subscribeSse<ChatEnv>("chat", (env) => {
+      if (env.sessionId !== sid) return; // 다른 세션 이벤트는 무시.
+      if (env.type === "start") {
         setActive((prev) => {
           if (prev && prev.key === key) return prev;
           return {
             key,
-            userMsg: ensureUserMsg(data.userText),
+            userMsg: ensureUserMsg(env.userText),
             assistantMsg: emptyAssistant(),
           };
         });
-      } catch {
-        // ignore
+        return;
       }
-    });
-
-    es.addEventListener("text", (ev) => {
-      try {
-        const data = JSON.parse((ev as MessageEvent).data) as { text: string };
+      if (env.type === "text") {
         setActive((prev) =>
-          prev && prev.key === key ? appendActiveText(prev, data.text) : prev,
+          prev && prev.key === key ? appendActiveText(prev, env.text) : prev,
         );
-      } catch {
-        // ignore
+        return;
       }
-    });
-
-    es.addEventListener("tool", (ev) => {
-      try {
-        const data = JSON.parse((ev as MessageEvent).data) as {
-          name: string;
-          summary: string;
-        };
+      if (env.type === "tool") {
         setActive((prev) =>
           prev && prev.key === key
-            ? appendActiveTool(prev, data.name, data.summary)
+            ? appendActiveTool(prev, env.name, env.summary)
             : prev,
         );
-      } catch {
-        // ignore
+        return;
       }
-    });
-
-    es.addEventListener("end", () => {
-      // active를 history에 굳히고 정리. 그 다음 jsonl 재페치로 정합성 확보.
-      setActive((prev) => {
-        if (!prev || prev.key !== key) return prev;
-        setHistory((h) => {
-          const finalAssistant: ChatMessage = {
-            ...prev.assistantMsg,
-            pending: false,
-          };
-          const liveUserText = userText(prev.userMsg);
-          let userIdx = -1;
-          for (let i = h.length - 1; i >= 0; i--) {
-            if (h[i].role === "user" && userText(h[i]) === liveUserText) {
-              userIdx = i;
-              break;
+      if (env.type === "end") {
+        setActive((prev) => {
+          if (!prev || prev.key !== key) return prev;
+          setHistory((h) => {
+            const finalAssistant: ChatMessage = {
+              ...prev.assistantMsg,
+              pending: false,
+            };
+            const liveUserText = userText(prev.userMsg);
+            let userIdx = -1;
+            for (let i = h.length - 1; i >= 0; i--) {
+              if (h[i].role === "user" && userText(h[i]) === liveUserText) {
+                userIdx = i;
+                break;
+              }
             }
-          }
-          return userIdx >= 0
-            ? [...h.slice(0, userIdx + 1), finalAssistant]
-            : [...h, prev.userMsg, finalAssistant];
-        });
-        const assistantText = userText(prev.assistantMsg);
-        if (assistantText) {
-          upsertSessionRef.current({
-            id: sid,
-            projectId,
-            lastMessage: clip(assistantText, 80),
-            updatedAt: Date.now(),
-            titleFallback: userText(prev.userMsg),
+            return userIdx >= 0
+              ? [...h.slice(0, userIdx + 1), finalAssistant]
+              : [...h, prev.userMsg, finalAssistant];
           });
-        }
-        return null;
-      });
-      void fetchHistoryRef.current(sid, { showLoading: false });
+          const assistantText = userText(prev.assistantMsg);
+          if (assistantText) {
+            upsertSessionRef.current({
+              id: sid,
+              projectId,
+              lastMessage: clip(assistantText, 80),
+              updatedAt: Date.now(),
+              titleFallback: userText(prev.userMsg),
+            });
+          }
+          return null;
+        });
+        void fetchHistoryRef.current(sid, { showLoading: false });
+      }
     });
 
     return () => {
-      es.close();
+      unsub();
     };
   }, [view]);
 
