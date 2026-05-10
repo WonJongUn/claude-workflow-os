@@ -20,7 +20,7 @@
 
 ## 컨벤션
 
-- **lint 필수**: 커밋 전에 `pnpm lint` 통과해야 한다. PostToolUse 훅이 `eslint --fix`를 자동 실행한다 (`.claude/settings.json`).
+- **lint 필수**: 커밋 전에 `pnpm lint` 통과해야 한다. PostToolUse 훅이 `eslint --fix`를 자동 실행한다 (`.claude/settings.json`). 같은 settings에 PreToolUse(`require-task.sh`) / Stop(`audit-tasks.sh`) 훅도 등록되어 코드 수정 전후로 TodoWrite 체크포인트를 강제한다 — 자세한 건 아래 "프로젝트 훅" 절.
 - **재사용 컴포넌트**: shadcn/ui를 쓰지 않고, 자체 프리미티브를 `app/components/ui/`에 둔다 (`Card`, `Badge`, `Button`, `Column` 등). 패널 컴포넌트는 이 프리미티브를 조합해서 만든다. raw Tailwind 유틸리티를 페이지에 직접 길게 쓰지 않는다.
 - **App Router 규약**: Route Handler `params`는 Promise. `RouteContext<'/path/[id]'>` 전역 헬퍼 사용. 모든 IO 라우트는 `runtime = "nodejs"`, `dynamic = "force-dynamic"`.
 - **Server vs Client**: 데이터 페칭과 파일 IO는 서버 컴포넌트/Route Handler에서. 상호작용 컴포넌트만 `"use client"`.
@@ -167,10 +167,14 @@ claude-workflow-os/
 │   ├── internals/                  # 칸반/세션 jsonl/Trace V2 스펙
 │   └── audit/                      # 정기 sweep 보고서 (날짜별)
 └── .claude/
-    ├── settings.json               # PostToolUse lint-fix 훅
+    ├── settings.json               # PreToolUse / PostToolUse / Stop 훅 등록
+    ├── hooks/                      # 프로젝트 훅 (외부 의존성 0, POSIX sh + awk)
+    │   ├── require-task.sh         # PreToolUse: in_progress TodoWrite 강제
+    │   └── audit-tasks.sh          # Stop: 미완료 TodoWrite 잔여 차단
     └── skills/
         ├── work-ticket/SKILL.md    # 자동 워커가 따르는 절차
-        └── draft-ticket/SKILL.md   # 한 줄 요청 → 티켓 스펙 자동 생성
+        ├── draft-ticket/SKILL.md   # 한 줄 요청 → 티켓 스펙 자동 생성
+        └── workflow-os-rules/SKILL.md # 코드 수정 후 docs/rules 셀프 점검
 ```
 
 ## 다중 프로젝트
@@ -260,6 +264,23 @@ type Ticket = {
 - 스킬이 이미 명시적으로 REVIEW로 전이했다면 noop.
 
 훅 등록은 `lib/ticket-worker.ts`의 `mergeStopHook(cwd)`이 자식 cwd의 `.claude/settings.local.json`에 idempotent하게 머지한다 — 사용자가 직접 손댈 필요 없음.
+
+## 프로젝트 훅 (`.claude/hooks/`)
+
+`.claude/settings.json`에서 등록되는 세 개의 hook 단계:
+
+| 단계 | 훅 | 동작 | 우회 |
+|------|------|------|------|
+| `PreToolUse` (Edit/Write/MultiEdit/NotebookEdit) | `.claude/hooks/require-task.sh` | 가장 최근 `TodoWrite` 호출에 `in_progress` todo 가 0개면 차단(exit 2). 코드 수정 전 TodoWrite 체크포인트 강제. | `CLAUDE_REQUIRE_TASK_BYPASS=1` |
+| `PostToolUse` (Edit/Write/MultiEdit) | `eslint --fix` | 변경된 파일에 자동 lint-fix. | — |
+| `Stop` | `.claude/hooks/audit-tasks.sh` | 턴 종료 시 가장 최근 `TodoWrite`에 pending/in_progress 가 남아있으면 차단(exit 2) — 작업을 어물쩍 끝내지 못하게. | `CLAUDE_AUDIT_TASKS_BYPASS=1` |
+
+설계 규칙:
+
+- **외부 의존성 0**. POSIX sh + `awk` 만 사용한다 (Python/Node 호출 금지). 어떤 OS/계정에서 spawn돼도 추가 install 없이 동작해야 한다.
+- transcript jsonl을 읽어 *가장 최근* `TodoWrite` 호출 라인 1개만 본다. TodoWrite는 *전체 list 스냅샷* 도구라 마지막 호출이 곧 현재 상태.
+- 표준 `TodoWrite`(harness 헤드리스) 가 단일 진실 원천이다. `TaskCreate`/`TaskUpdate`(Team 모드 전용) 는 게이트로 보지 않는다 — 두 시스템 차이는 `docs/internals/session-tasks-replay.md` 참조.
+- 우회 환경변수는 명시적 escape hatch — 자동화/테스트가 워크플로우를 깨지 않도록 둔다. 일반 작업에서 켜지 말 것.
 
 ## 컨텍스트 소스 경로
 

@@ -157,6 +157,14 @@ useQuery({
 - `notify({ category, href, ... })`에 카테고리(`task`/`session`/`ticket`/`project`/`settings`/`system`)와 클릭 시 이동 경로를 반드시 부여한다. 패널에서 카테고리 탭으로 필터링하고 클릭으로 라우팅된다.
 - 카테고리 탭은 항상 모두 표시(0건도 흐리게), 정렬은 개수 내림차순이며 "전체"가 첫 번째.
 
+## 세션 태스크 그래프 lane 정렬
+
+`SessionTaskGraphView` 의 lane 순서는 *(slot, reuse) 사전식*. TodoWrite 슬롯
+재할당으로 분기된 lane (id `"1.2"`, `"1.3"`, ...) 은 부모 lane (`"1"`) 바로 아래
+인접 배치 + `↳` prefix + 좌측 들여쓰기 (`pl-6`) 로 파생 관계를 시각화한다.
+슬롯 간 순서는 그 슬롯의 *대표(첫)* lane 첫 이벤트 ts 로 결정 — 시간순 직관 유지.
+규칙 상세 → `docs/internals/session-tasks-replay.md` §3.
+
 ## 서브에이전트 표시
 
 서브에이전트(Claude Code의 Task/Agent 도구로 spawn된 보조 에이전트)는 모든 뷰에서 동일한 시각 언어로 구분한다.

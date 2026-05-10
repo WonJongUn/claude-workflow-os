@@ -463,6 +463,7 @@ TeamCreate.input.team_name === Agent.input.team_name  ⇒ 같은 팀
 | E9 | 멀티블록 한 assistant 라인의 부분 매칭 | thinking + text + tool_use가 한 라인에 — span 분리 시 같은 uuid를 공유 | span id를 합성 키(`<uuid>:<blockIndex>`) 또는 첫 블록만 대표로 |
 | E10 | `caller.type` 비-direct 케이스 | (관측 안 됨, 가설) skill 실행 안의 도구 호출에서 다른 값일 가능성 | 추가 데이터 수집 필요 |
 | E11 | TaskCreate 알림 `#N` 이 실제 id와 어긋나 알림 클릭 시 카드 강조 실패 | TaskCreate input엔 taskId 없음. 우리가 1..N 합성했지만 Claude Code 2.1+는 *harness 전역 시퀀스*를 envelope `toolUseResult.task.id` 로 부여 (예: 한 세션 4건이 18·19·20·21) | tool_use_id를 키로 보류 → 같은/후속 라인 tool_result의 `toolUseResult.task.id` 로 확정 (`session-tasks.ts` `extractTaskResultId`, watcher `pendingCreate`) |
+| E12 | TodoWrite 슬롯이 다른 subject로 재할당돼서 한 그래프 노드에 무관한 작업 두 개가 섞임 / `finalTasks` 에서 옛 task 가 사라짐 | TodoWrite 는 *전체 list 스냅샷* 이라 같은 인덱스 i 에 다른 todo 가 들어와도 자체 이벤트가 없음 | subject 변경을 새 logical task 로 분기(`"i"` → `"i.2"` → `"i.3"`), 옛 task 는 deleted 로 닫음. `finalTasks` 는 events fold 로 도출해 deleted 보존. 자세히 → `session-tasks-replay.md` |
 
 ---
 
