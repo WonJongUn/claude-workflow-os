@@ -23,6 +23,10 @@ const PatchSchema = z.object({
   permissionMode: z
     .enum(["default", "acceptEdits", "bypassPermissions"])
     .optional(),
+  /** 자동 워커 동시 실행 한도. 1~5. */
+  maxConcurrentTickets: z.number().int().min(1).max(5).optional(),
+  /** IN_PROGRESS 회수 임계 (분). 0/음수면 watchdog 비활성. */
+  ticketWatchdogMinutes: z.number().int().optional(),
 }) satisfies z.ZodType<AppSettings>;
 
 async function _GET() {

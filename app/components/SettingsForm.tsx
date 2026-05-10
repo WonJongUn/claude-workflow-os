@@ -72,18 +72,38 @@ function SettingsFormInner({ initial }: { initial: AppSettings }) {
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(
     resolvePermissionMode(initial.permissionMode),
   );
+  const [maxConcurrentTickets, setMaxConcurrentTickets] = useState<number>(
+    typeof initial.maxConcurrentTickets === "number"
+      ? initial.maxConcurrentTickets
+      : 1,
+  );
+  const [ticketWatchdogMinutes, setTicketWatchdogMinutes] = useState<number>(
+    typeof initial.ticketWatchdogMinutes === "number"
+      ? initial.ticketWatchdogMinutes
+      : 30,
+  );
 
   const initialPath = initial.claudeBinaryPath ?? "";
   const initialTerminal = resolveTerminalApp(initial.terminalApp);
   const initialPrompt = initial.defaultPrompt ?? "";
   const initialUseTmux = initial.useTmux === true;
   const initialPermissionMode = resolvePermissionMode(initial.permissionMode);
+  const initialMaxConcurrent =
+    typeof initial.maxConcurrentTickets === "number"
+      ? initial.maxConcurrentTickets
+      : 1;
+  const initialWatchdog =
+    typeof initial.ticketWatchdogMinutes === "number"
+      ? initial.ticketWatchdogMinutes
+      : 30;
   const isDirty =
     claudeBinaryPath.trim() !== initialPath.trim() ||
     terminalApp !== initialTerminal ||
     defaultPrompt !== initialPrompt ||
     useTmux !== initialUseTmux ||
-    permissionMode !== initialPermissionMode;
+    permissionMode !== initialPermissionMode ||
+    maxConcurrentTickets !== initialMaxConcurrent ||
+    ticketWatchdogMinutes !== initialWatchdog;
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -94,6 +114,8 @@ function SettingsFormInner({ initial }: { initial: AppSettings }) {
       defaultPrompt,
       useTmux,
       permissionMode,
+      maxConcurrentTickets,
+      ticketWatchdogMinutes,
     });
   }
 
@@ -239,6 +261,45 @@ function SettingsFormInner({ initial }: { initial: AppSettings }) {
             placeholder="예: 이 저장소 구조를 빠르게 정리해줘."
             value={defaultPrompt}
             onChange={(e) => setDefaultPrompt(e.target.value)}
+          />
+        </Field>
+      </SettingsSection>
+
+      <SettingsSection
+        title="워커 자동화"
+        description="자동 티켓 워커의 동시성과 안전망."
+      >
+        <Field
+          label="동시 실행 (1~5)"
+          hint="자동 워커가 동시에 띄울 수 있는 최대 세션 수."
+        >
+          <input
+            type="number"
+            min={1}
+            max={5}
+            step={1}
+            className={cn(inputBaseClass, "w-32 font-mono text-xs")}
+            value={maxConcurrentTickets}
+            onChange={(e) => {
+              const v = Number.parseInt(e.target.value, 10);
+              if (Number.isFinite(v)) setMaxConcurrentTickets(v);
+            }}
+          />
+        </Field>
+        <Field
+          label="Watchdog (분)"
+          hint="IN_PROGRESS인 티켓이 N분 이상 갱신 없으면 자동으로 REVIEW로 회수합니다. 0이면 비활성."
+        >
+          <input
+            type="number"
+            min={0}
+            step={1}
+            className={cn(inputBaseClass, "w-32 font-mono text-xs")}
+            value={ticketWatchdogMinutes}
+            onChange={(e) => {
+              const v = Number.parseInt(e.target.value, 10);
+              if (Number.isFinite(v)) setTicketWatchdogMinutes(v);
+            }}
           />
         </Field>
       </SettingsSection>

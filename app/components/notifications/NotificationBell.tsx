@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
-import { Bell, CheckCircle2, Info, Trash2, XCircle } from "lucide-react";
+import { AlertTriangle, Bell, CheckCircle2, Info, Trash2, XCircle } from "lucide-react";
 import { cn } from "../ui";
 import { useNotifications } from "./NotificationProvider";
 import {
@@ -25,12 +25,14 @@ const LEVEL_ICON: Record<
   success: CheckCircle2,
   error: XCircle,
   info: Info,
+  warning: AlertTriangle,
 };
 
 const LEVEL_TONE: Record<NotificationLevel, string> = {
   success: "text-emerald-600 dark:text-emerald-400",
   error: "text-red-600 dark:text-red-400",
   info: "text-sky-600 dark:text-sky-400",
+  warning: "text-amber-600 dark:text-amber-400",
 };
 
 /**

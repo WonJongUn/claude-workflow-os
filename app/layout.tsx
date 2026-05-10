@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import { ChatBotWidget } from "./components/chatbot/ChatBotWidget";
 import { PushSetup } from "./components/PushSetup";
 import { Providers } from "./components/Providers";
 import { SessionTaskNotifier } from "./components/SessionTaskNotifier";
@@ -35,10 +36,11 @@ export default function RootLayout({
         <Providers>
           <div className="flex min-h-screen">
             <Sidebar />
-            <main className="flex-1 overflow-x-auto">{children}</main>
+            <main className="min-w-0 flex-1 overflow-x-clip">{children}</main>
           </div>
           <PushSetup />
           <SessionTaskNotifier />
+          <ChatBotWidget />
         </Providers>
       </body>
     </html>

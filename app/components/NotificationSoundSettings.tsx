@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   getSoundVolume,
   isSoundEnabled,
@@ -14,14 +14,14 @@ import {
  * 같은 페이지의 SettingsForm과 동일한 grid 레이아웃을 사용해 시각적으로 통일.
  */
 export function NotificationSoundSettings() {
-  const [enabled, setEnabled] = useState(true);
-  const [volume, setVolume] = useState(0.18);
-
-  // localStorage는 SSR에서 접근 불가 — 마운트 후 hydration.
-  useEffect(() => {
-    setEnabled(isSoundEnabled());
-    setVolume(getSoundVolume());
-  }, []);
+  // localStorage는 SSR에서 접근 불가 — useState lazy init은 클라 1회만 실행되므로 안전.
+  // useEffect로 사후 동기화하면 첫 프레임에 잘못된 값이 보였다가 바뀌어 깜빡임이 생긴다.
+  const [enabled, setEnabled] = useState(() =>
+    typeof window === "undefined" ? true : isSoundEnabled(),
+  );
+  const [volume, setVolume] = useState(() =>
+    typeof window === "undefined" ? 0.18 : getSoundVolume(),
+  );
 
   const handleEnabled = (next: boolean) => {
     setEnabled(next);

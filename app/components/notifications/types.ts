@@ -1,5 +1,5 @@
 /** 알림 시각/의미 레벨. 토스트 색·아이콘과 사운드 결정. */
-export type NotificationLevel = "success" | "error" | "info";
+export type NotificationLevel = "success" | "error" | "info" | "warning";
 
 /**
  * 알림 도메인 분류. 패널의 카테고리 탭 필터링과 라벨 표시에 쓰인다.

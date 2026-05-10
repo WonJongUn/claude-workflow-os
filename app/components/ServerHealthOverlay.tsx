@@ -3,15 +3,16 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 
-const PING_INTERVAL_MS = 10_000;
-const PING_TIMEOUT_MS = 4_000;
-
 /**
- * 서버 헬스 상태를 주기적으로 체크하고, 연결이 끊기면 모든 페이지를 dim 처리하면서 안내한다.
+ * 네트워크 단절 감지 오버레이.
  *
- * - 첫 마운트 직후 1회 ping, 이후 PING_INTERVAL_MS 마다 polling.
- * - AbortController로 타임아웃 적용 — 서버가 hang하는 경우도 offline으로 간주.
- * - 회복되면 자동으로 오버레이 dismiss.
+ * 폴링하지 않는다 — `navigator.onLine` + window `online`/`offline` 이벤트가
+ * 단일 진실 원천. 폴링은 localhost HTTP/1.1 동시 연결 한도(6)에서
+ * 다른 요청(SSE, worker-log, context 등)과 큐 경쟁해 false positive를 만들었다.
+ *
+ * 트레이드오프: 서버 프로세스만 죽고 OS 네트워크는 살아있는 케이스는 감지 못 함.
+ * 그건 현재 도구가 로컬 전용이라 "터미널에서 dev 서버 죽음" → 즉시 사용자가 인지하므로
+ * 추가 감지가 필요 없다. SSE가 끊어지면 use-tickets의 EventSource가 알아서 재연결.
  *
  * NotificationProvider처럼 layout 레벨에 마운트되어야 한다.
  */
@@ -25,29 +26,16 @@ export function ServerHealthOverlay() {
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    async function ping() {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), PING_TIMEOUT_MS);
-      try {
-        const res = await fetch("/api/health", {
-          cache: "no-store",
-          signal: ctrl.signal,
-        });
-        if (cancelled) return;
-        setOffline(!res.ok);
-      } catch {
-        if (cancelled) return;
-        setOffline(true);
-      } finally {
-        clearTimeout(timer);
-      }
+    function sync() {
+      // navigator.onLine은 boolean — 브라우저별 정확도는 다르지만 false positive가 폴링 방식보다 훨씬 적다.
+      setOffline(typeof navigator !== "undefined" && !navigator.onLine);
     }
-    void ping();
-    const id = setInterval(ping, PING_INTERVAL_MS);
+    sync();
+    window.addEventListener("online", sync);
+    window.addEventListener("offline", sync);
     return () => {
-      cancelled = true;
-      clearInterval(id);
+      window.removeEventListener("online", sync);
+      window.removeEventListener("offline", sync);
     };
   }, []);
 
@@ -61,10 +49,10 @@ export function ServerHealthOverlay() {
     >
       <div className="mx-4 max-w-md rounded-xl border border-zinc-200 bg-white p-5 text-center shadow-2xl dark:border-zinc-800 dark:bg-zinc-950">
         <div className="mb-2 text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-          서버에 연결할 수 없습니다
+          네트워크 연결이 끊겼습니다
         </div>
         <div className="text-xs text-zinc-600 dark:text-zinc-400">
-          서버가 실행 중인지 확인해 주세요. 연결이 회복되면 자동으로 사라집니다.
+          연결이 회복되면 자동으로 사라집니다.
         </div>
       </div>
     </div>,

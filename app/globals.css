@@ -28,6 +28,16 @@ body {
   overscroll-behavior-y: none;
 }
 
+/* 콘텐츠 높이가 뷰포트 임계점을 넘나들 때 세로 스크롤바 등장/소멸로 viewport 폭이
+ * ~15px 씩 흔들리면 sticky 요소의 x 좌표가 같이 밀린다 (Trace V2 우측 드로어가
+ * 휠 스크롤 시 좌우로 떨려 보이던 문제). overflow-y:scroll 로 스크롤바 영역을
+ * 항상 점유해 viewport 폭을 절대 변하지 않게 한다. scrollbar-gutter:stable 은
+ * 브라우저별 지원/동작이 일관되지 않아 폴백 대신 강한 보장으로 둔다. */
+html {
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+}
+
 /*
  * Tailwind v4 preflight는 button/[role=button]/a 등에 cursor:pointer를 자동으로 적용하지 않는다.
  * 인터랙티브 요소는 클릭 가능함을 시각적으로 알리는 게 정상 기대치이므로 전역으로 부여한다.
