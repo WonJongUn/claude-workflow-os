@@ -204,11 +204,18 @@ export function useChatbot(): {
         // 진행 중 turn이 있으면 active overlay에 hydrate (SSE init 역할).
         if (data.turn) {
           const snap = data.turn;
+          // 호출 시점의 view/sessions를 ref로 읽어 stale 캡처를 피한다.
+          const v = viewRef.current;
+          const projectIdGuess =
+            v.kind === "chat" && v.sessionId === sessionId
+              ? v.projectId
+              : (sessionsRef.current.find((s) => s.id === sessionId)
+                  ?.projectId ?? "");
           setActive((prev) => {
             // 자기 탭이 직접 send 중이면 그 overlay 유지 (블록 누적 차이가 더 정확).
             if (prev) return prev;
             return {
-              key: `${currentProjectFor(sessionId)}:${sessionId}`,
+              key: `${projectIdGuess}:${sessionId}`,
               userMsg: {
                 id: `u-${Date.now()}`,
                 role: "user",
@@ -230,16 +237,14 @@ export function useChatbot(): {
     [],
   );
 
-  /** sessionId가 속한 view의 projectId를 가져오는 보조 — fetchHistory 내부 hydrate용. */
-  const currentProjectFor = (sessionId: string): string => {
-    const v = viewRef.current;
-    if (v.kind === "chat" && v.sessionId === sessionId) return v.projectId;
-    return sessions.find((s) => s.id === sessionId)?.projectId ?? "";
-  };
   const viewRef = useRef(view);
   useEffect(() => {
     viewRef.current = view;
   }, [view]);
+  const sessionsRef = useRef(sessions);
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
 
   const openSession = useCallback(
     async (sessionId: string, projectId: string) => {
