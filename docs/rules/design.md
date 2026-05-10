@@ -47,6 +47,7 @@ Tailwind 기본 스케일만. 자주 쓰는 값:
 - 본문: 기본 (`text-sm`)
 - 보조: `text-xs text-zinc-500`
 - 모노스페이스 라벨/ID: `font-mono text-[10px]` 또는 `text-xs`
+- 보조 정보 톤(메타 줄, 캡션, 차트 축 라벨): `text-[10px]`/`text-[11px]` 임의값 허용. Tailwind 기본 스케일에 11px 토큰이 없어 자연스러운 위계가 깨지는 곳에 한해 사용 — 그 외 임의 폰트값은 금지.
 
 ## 상태 표현
 

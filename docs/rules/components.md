@@ -103,6 +103,10 @@ if (!abs.startsWith(`${BASE}${path.sep}`)) {
 - `any` props
 - 한 파일에 5개 이상 컴포넌트
 
+## 챗봇 위젯
+
+인-페이지 Claude 챗봇은 `app/components/chatbot/ChatBotWidget.tsx` 단일 진입점만 사용한다. 내부 상태/SSE 구독은 `use-chatbot.ts` 훅에 캡슐화되어 있고, 메시지 리스트는 `ChatMessageList.tsx`로 분리. 다른 페이지가 챗봇을 띄우고 싶을 때 위젯을 별도로 다시 구현하지 말고 위 컴포넌트를 mount한다.
+
 ## 툴팁 — 네이티브 `title` 금지
 
 호버로 보조 설명을 띄울 때는 항상 `app/components/ui/Tooltip.tsx`를 사용한다. HTML 네이티브 `title` 속성을 *정보성 툴팁* 용도로 쓰지 않는다.

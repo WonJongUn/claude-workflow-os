@@ -85,6 +85,7 @@
 - **서버 캐시**: `lib/cache.ts`의 `createCache(name)`만 사용 (메트릭 자동 노출). mtime+size 키 권장. → `docs/rules/performance.md`
 - **API 인스트루멘트**: 모든 `/api/*` 라우트는 `withMetrics(routePattern, handler)`로 wrap. → `docs/rules/api.md`
 - **세션 식별자**: `?sessionId=` (UUID) 단일 키, `?path=` 금지. → `docs/rules/api.md`
+- **SSE 단일 채널**: SSE 라우트는 `/api/sse` 하나뿐. 새 실시간 도메인은 topic envelope로 합치고 별도 라우트 만들지 않는다. 클라이언트는 `subscribeSse(topic)`만 사용. → `docs/rules/api.md` "SSE 단일 채널"
 - **알림**: `notify({ category, href, ... })` 둘 다 필수. → `docs/rules/design.md`, `docs/rules/components.md`
 - **ETag/304**: 큰 응답은 `<schemaVer>-<mtime+size hash>` ETag로 304. 응답 shape이 바뀌면 schema 버전 bump해 캐시 무효화. → `docs/rules/performance.md`
 - **세션 본문 = 메인 + 서브에이전트 합본**: `lib/sessions.ts`의 `readSessionBundle(mainPath)`이 메인 jsonl + `<sessionId>/subagents/agent-*.jsonl`을 묶어 한 본문 + fingerprint로 반환. 모든 파서/뷰는 합본을 가정 (단, line 순서 ≠ 시간순이라 ts로 정렬 필수). 서브에이전트→Agent tool_use_id 매핑은 `buildSubagentParentMap` (promptId+description).
@@ -96,6 +97,9 @@
 
 ```
 claude-workflow-os/
+├── instrumentation.ts              # Next.js 부트 훅 (Node 런타임에서 워커 시작)
+├── scripts/
+│   └── ticket-stop-hook.mjs        # Claude Code Stop hook (자식 세션 종료 시 REVIEW 회수)
 ├── app/
 │   ├── page.tsx                    # 진입 페이지 (대시보드 리다이렉트)
 │   ├── dashboard/page.tsx          # 메인 대시보드
@@ -107,20 +111,30 @@ claude-workflow-os/
 │   ├── components/
 │   │   ├── ui/                     # 재사용 프리미티브 (도메인 모름)
 │   │   ├── notifications/          # NotificationProvider, Bell, ToastStack
+│   │   ├── chatbot/                # ChatBotWidget + use-chatbot (in-page Claude 챗봇)
 │   │   ├── SessionPanel.tsx
+│   │   ├── SessionTeamGraphView.tsx # 서브에이전트 팀 그래프
 │   │   ├── ContextPanel.tsx
 │   │   ├── TicketBoard.tsx
+│   │   ├── AcceptanceCriteriaInput.tsx
+│   │   ├── BoardHelpModal.tsx
+│   │   ├── WorkerLogPanel.tsx      # 티켓 워커 로그 tail
 │   │   ├── ServerHealthOverlay.tsx
+│   │   ├── sse-bus.ts              # 단일 SSE 연결 multiplex
+│   │   ├── use-transition-pulse.ts # 카드 상태 전이 시각 강조
 │   │   ├── use-*.ts                # 도메인 훅 (use-tickets, use-sessions, ...)
 │   │   └── *-client.ts             # axios 어댑터
 │   └── api/
 │       ├── context/route.ts
 │       ├── tickets/{,[id]}/route.ts
+│       ├── tickets/[id]/answer/route.ts        # REVIEW 답변 → 워커 resume
+│       ├── tickets/[id]/worker-log/route.ts    # 워커 로그 tail (마지막 32KB)
 │       ├── projects/{,[id]}/route.ts
 │       ├── sessions/{,info,file,extras,tasks,launch,resume}/route.ts
 │       ├── settings/route.ts
 │       ├── push/route.ts
-│       ├── sse/{,session-tasks}/route.ts
+│       ├── chat/{route,abort,active,history,sse}/route.ts # 인-페이지 챗봇 백엔드
+│       ├── sse/route.ts            # 단일 SSE 엔드포인트 (티켓·세션 태스크 통합)
 │       ├── fs/{browse,search}/route.ts
 │       ├── entries/route.ts
 │       ├── system-check/route.ts
@@ -138,13 +152,25 @@ claude-workflow-os/
 │   ├── session-tasks.ts            # 태스크 라이브 + 리플레이
 │   ├── session-watcher.ts          # SSE용 jsonl tail
 │   ├── ticket-store.ts             # 티켓 JSON CRUD + 이벤트 버스
+│   ├── ticket-worker.ts            # OPEN 픽업 → headless Claude spawn
+│   ├── chat-bus.ts                 # 챗봇 turn 스냅샷 + EventEmitter
+│   ├── chat-spawn.ts               # `claude -p --output-format stream-json` 어댑터
+│   ├── chat-abort.ts               # 진행 중 챗봇 turn 중단 레지스트리
 │   ├── project-store.ts            # 프로젝트 등록부
 │   ├── app-settings.ts             # 앱 설정 저장
 │   ├── web-push.ts                 # VAPID 발송
 │   └── ...
 ├── public/sw.js                    # Service Worker
-├── tickets/                        # 티켓 + .projects.json
-└── .claude/settings.json           # PostToolUse lint-fix 훅
+├── tickets/                        # 티켓 + .projects.json + .logs/<id>.log
+├── docs/
+│   ├── rules/                      # 아키텍처 규약 (필독)
+│   ├── internals/                  # 칸반/세션 jsonl/Trace V2 스펙
+│   └── audit/                      # 정기 sweep 보고서 (날짜별)
+└── .claude/
+    ├── settings.json               # PostToolUse lint-fix 훅
+    └── skills/
+        ├── work-ticket/SKILL.md    # 자동 워커가 따르는 절차
+        └── draft-ticket/SKILL.md   # 한 줄 요청 → 티켓 스펙 자동 생성
 ```
 
 ## 다중 프로젝트
@@ -203,6 +229,37 @@ type Ticket = {
   updated_at: string
 }
 ```
+
+## 워커 (자동 티켓 처리)
+
+`instrumentation.ts`가 Next.js Node 런타임 부팅 시 한 번 `lib/ticket-worker.ts`의 `startTicketWorker()`를 호출한다 (Edge에서는 skip). 워커는
+
+- 부팅 직후 OPEN 티켓을 `maxConcurrentTickets` 한도 안에서 픽업하고,
+- `ticketEvents`를 구독해 새 티켓/업데이트가 오면 즉시 추가 픽업한다.
+- 픽업한 티켓은 `currentSessionId`(UUID)와 `workerLog` 경로를 채운 뒤 `claude -p --session-id <id>`를 detached + unref로 spawn — 부모 Next 서버와 생명주기를 분리한다. 자식 환경변수 `TICKET_ID`/`CLAUDE_WORKFLOW_OS_URL`을 통해 spawn된 세션이 work-ticket 스킬로 자기 자신을 진행한다.
+- 60초 watchdog가 죽은 자식의 inFlight 슬롯을 회수하고, `ticketWatchdogMinutes` 이상 정체된 IN_PROGRESS 티켓을 `pendingApproval=true` + REVIEW로 강제 회수한다.
+
+비정상 종료(exit ≠ 0 또는 signal)는 `pendingQuestion`에 사유를 적고 REVIEW로 보내 사용자가 답변하면 자동 재시도되게 한다.
+
+## 챗봇 (인-페이지 Claude 위젯)
+
+`app/components/chatbot/ChatBotWidget.tsx`가 단일 진입점. 백엔드는 `app/api/chat/*` + `lib/chat-spawn.ts` + `lib/chat-bus.ts` + `lib/chat-abort.ts` 4개 모듈로 구성된다.
+
+- `/api/chat`: `claude -p --output-format stream-json --permission-mode bypassPermissions`을 spawn. stream-json 라인을 파싱해 `chat-bus`에 누적 + emit.
+- `/api/chat/sse`: 같은 세션을 보는 다른 탭에 turn 진행 상황을 실시간 푸시 (start/text/tool/end). 신규 구독자에게는 진행 중 turn 스냅샷을 init으로 한 번 보낸다.
+- `/api/chat/abort`: `chat-abort` 레지스트리에서 컨트롤러를 찾아 SIGTERM. 사용자가 "중단" 버튼을 누를 때 호출.
+- `/api/chat/active`, `/api/chat/history`: 활성 세션 목록과 jsonl 기반 히스토리.
+
+`bypassPermissions`는 인-페이지 챗봇이 사용자 클릭 승인을 거칠 수 없으므로 강제 — 권한 정책상 허용된 작업만 수행한다.
+
+## Stop 훅
+
+`scripts/ticket-stop-hook.mjs`는 워커가 spawn한 자식 Claude 세션의 **모든 턴 종료**에 호출된다 (Claude Code의 Stop hook). 환경변수 `TICKET_ID`/`CLAUDE_WORKFLOW_OS_URL`로 워크플로우 OS에 PATCH해
+
+- 티켓이 여전히 IN_PROGRESS면 `pendingApproval=true` + REVIEW로 회수 → Web Push 발송으로 사용자 인지.
+- 스킬이 이미 명시적으로 REVIEW로 전이했다면 noop.
+
+훅 등록은 `lib/ticket-worker.ts`의 `mergeStopHook(cwd)`이 자식 cwd의 `.claude/settings.local.json`에 idempotent하게 머지한다 — 사용자가 직접 손댈 필요 없음.
 
 ## 컨텍스트 소스 경로
 

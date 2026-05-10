@@ -8,13 +8,15 @@ Local control plane for [Claude Code](https://docs.claude.com/claude-code). Run 
 
 ## What you get
 
+- **Automatic ticket worker** — `instrumentation.ts` boots `lib/ticket-worker.ts` once per process, which picks up `OPEN` tickets, spawns a detached `claude -p` per ticket via the `work-ticket` skill, and recovers stuck or abnormally-exited workers into `REVIEW`. Concurrency and watchdog timeout are settings.
+- **In-page Claude chatbot** — `ChatBotWidget` is a single-entrypoint widget backed by `/api/chat/*` (spawn + SSE + abort + history). Multiple tabs can attach to the same turn via SSE and receive a snapshot on subscribe.
 - **Multi-project switcher** — register any folder containing a `.claude/` directory. Sessions, agents, skills, and settings are scoped per project.
 - **Live session viewer** — every Claude Code session JSONL is parsed and surfaced as Tasks · Conversation · Edited files · Timeline · Trace · Swimlane · Stats · Raw views. Tasks update in real time over SSE.
 - **Subagent integration** — Claude Code stores subagent (Agent/Task tool) work in separate `<sessionId>/subagents/agent-*.jsonl` files. The viewer merges them with the main jsonl, nests subagent tool chains under their parent Agent in the Trace view, and tags them with a violet "서브에이전트" badge across Timeline / Conversation / Edited Files. Filter tabs split per-source (main / subagent / all).
 - **Ticket kanban** — `OPEN → IN_PROGRESS → REVIEW → DONE` with `blocked` / `blockedReason`. Tickets are plain JSON files in `tickets/`, easy to inspect or hand-edit.
 - **Web Push** — get a browser/OS notification when a ticket enters `REVIEW` or an in-progress ticket is marked `blocked`. Works while the tab is closed.
 - **Notification center** — every mutation (ticket transition, project create, session resume, …) emits a categorized notification. Click to deep-link back to the relevant page.
-- **Built-in monitoring** — `/api/metrics` exposes Prometheus exposition; `/monitoring` page renders self-hosted charts (CPU, RSS, event-loop lag, per-route p99 latency, request rate, cache hit rate) without Grafana. Hover crosshair, legend solo-toggle, and HELP-text tooltips on metric titles.
+- **Built-in monitoring** — `/api/metrics` exposes Prometheus exposition (via `prom-client`); the `/monitoring` page renders self-hosted charts (CPU, RSS, event-loop lag, per-route p99 latency, request rate, cache hit rate) without Grafana. Hover crosshair, legend solo-toggle, and HELP-text tooltips on metric titles.
 - **Server health overlay** — every page polls `/api/health`; if the server stops responding, the UI dims with a clear "reconnect" prompt.
 - **URL is the view-state truth** — active project, tab, highlighted task all live in `?project=` / `?tab=` / `?taskId=`. Bookmarks, deep links, and the back button all just work.
 

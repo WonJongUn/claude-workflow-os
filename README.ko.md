@@ -8,13 +8,15 @@
 
 ## 무엇을 할 수 있나
 
+- **자동 티켓 워커** — `instrumentation.ts`가 프로세스당 한 번 `lib/ticket-worker.ts`의 `startTicketWorker()`를 호출. OPEN 티켓을 픽업해 `work-ticket` 스킬로 `claude -p`를 detached spawn하고, 멈춘/비정상 종료된 워커는 `REVIEW`로 회수한다. 동시성과 watchdog 분은 설정에서 조절.
+- **인-페이지 Claude 챗봇** — `ChatBotWidget` 단일 위젯 + `/api/chat/*` (spawn + SSE + abort + history). 여러 탭이 같은 turn에 SSE로 join 가능, 신규 구독자는 진행 중 turn 스냅샷을 init으로 받는다.
 - **다중 프로젝트 스위처** — `.claude/` 디렉토리가 있는 어떤 폴더든 등록 가능. 세션·에이전트·스킬·설정이 프로젝트별로 분리된다.
 - **라이브 세션 뷰어** — 모든 Claude Code 세션 jsonl을 파싱해 태스크·대화·편집 파일·타임라인·트레이스·스윔레인·통계·원본 뷰로 노출. 태스크는 SSE로 실시간 갱신.
 - **서브에이전트 통합** — Claude Code는 서브에이전트(Agent/Task 도구) 작업을 `<sessionId>/subagents/agent-*.jsonl` 별도 파일에 저장. 뷰어가 메인 jsonl과 합쳐서 Trace에서는 부모 Agent 아래로 nesting하고, Timeline·대화·편집 파일에는 violet "서브에이전트" 배지로 표시. 메인/서브/전체로 나누는 필터 탭 제공.
 - **티켓 칸반** — `OPEN → IN_PROGRESS → REVIEW → DONE` 상태 머신 + `blocked`/`blockedReason`. 티켓은 `tickets/`의 평문 JSON이라 사람이 직접 열어보거나 수정 가능.
 - **Web Push** — 티켓이 `REVIEW`로 진입하거나, 진행 중 티켓이 `blocked`되면 브라우저/OS 알림. 탭이 닫혀 있어도 동작.
 - **알림 센터** — 모든 mutation(티켓 전이, 프로젝트 생성, 세션 이어가기 등)이 카테고리별 알림 발송. 클릭하면 해당 페이지로 딥링크.
-- **내장 모니터링** — `/api/metrics`가 Prometheus 익스포지션을 노출, `/monitoring` 페이지가 자체 차트(CPU·RSS·이벤트 루프 지연·라우트별 p99 레이턴시·요청률·캐시 히트율)를 그려줌. Grafana 없이 작동. 호버 crosshair, 범례 솔로 토글, 메트릭 제목에 HELP 텍스트 툴팁 지원.
+- **내장 모니터링** — `/api/metrics`가 `prom-client` 기반 Prometheus 익스포지션을 노출, `/monitoring` 페이지가 자체 차트(CPU·RSS·이벤트 루프 지연·라우트별 p99 레이턴시·요청률·캐시 히트율)를 그려줌. Grafana 없이 작동. 호버 crosshair, 범례 솔로 토글, 메트릭 제목에 HELP 텍스트 툴팁 지원.
 - **서버 헬스 오버레이** — 모든 페이지가 `/api/health`를 폴링. 서버가 죽으면 UI가 흐려지면서 재연결 안내.
 - **URL이 뷰 상태의 진실 원천** — 활성 프로젝트·탭·강조 태스크는 `?project=`/`?tab=`/`?taskId=`. 북마크·딥링크·뒤로가기가 자연스럽게 동작.
 

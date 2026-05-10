@@ -90,6 +90,23 @@ cache.set(p, { mtimeMs: stat.mtimeMs, size: stat.size, result });
 return result;
 ```
 
+## 모듈 레벨 상태 (globalThis hoist)
+
+워커/이벤트 버스/abort 레지스트리처럼 **프로세스당 하나여야 하는 mutable 상태**는 모듈 변수로 두면 dev hot reload(HMR)에서 모듈이 다시 evaluate될 때 두 인스턴스가 병존한다 (워커가 두 번 시작되거나, EventEmitter가 두 개로 갈라져 SSE가 일부 구독자에게 안 도달).
+
+패턴: `globalThis`에 hoist한 뒤 모듈 alias로 노출.
+
+```ts
+type WorkerState = { isStarted: boolean; inFlight: Set<string> };
+const __G = globalThis as unknown as { __workerState?: WorkerState };
+const state: WorkerState =
+  __G.__workerState ?? (__G.__workerState = { isStarted: false, inFlight: new Set() });
+```
+
+이 패턴은 `lib/ticket-worker.ts`(WorkerState), `lib/chat-bus.ts`(EventEmitter + turn 스냅샷), `lib/chat-abort.ts`(AbortController Map), `lib/metrics.ts`(prom-client Registry), `lib/ticket-store.ts`(`ticketEvents`)에서 사용한다.
+
+메트릭이 의미 있는 캐시는 그대로 `createCache(name)` — globalThis hoist는 *상태* 전용, *캐시*는 named cache.
+
 ## 디스크 IO
 
 - 같은 디렉토리의 여러 파일을 처리할 땐 `Promise.all`로 병렬화. for 루프 안 직렬 stat/readFile은 N×latency.
