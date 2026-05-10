@@ -11,6 +11,7 @@ import {
   extractToolUseId,
   formatDuration,
   normalizeContent,
+  type ContentBlock,
   type ParsedEvent,
 } from "./session-log-shared";
 
@@ -52,6 +53,12 @@ type SpanV2 = {
   event: ParsedEvent;
   /** 도구 결과 이벤트(있을 때). 상세 패널에 같이 표시. */
   resultEvent?: ParsedEvent;
+  /**
+   * 서브에이전트(sidechain) span에서 어느 서브에이전트의 작업인지 식별하는 짧은 라벨.
+   * 부모 Agent의 input에서 파생: TeamCreate spawn은 `name`, 일반 spawn은 `subagent_type` 또는 description 첫 단어.
+   * sidechain이 아닌 span은 undefined.
+   */
+  subagentLabel?: string;
 };
 
 /** 트레이스 단위 메타. 세션 1개 = 1 트레이스. */
@@ -171,13 +178,44 @@ export default function SessionTraceV2View({
 
   const totalMs = Math.max(1, trace.endMs - trace.startMs);
   const open = selected !== null;
+  const turnSpans = trace.spans.filter((s) => s.kind === "turn");
+  const allTurnsCollapsed =
+    turnSpans.length > 0 && turnSpans.every((t) => collapsed.has(t.id));
+  /**
+   * 모든 turn span 의 userOverride 를 한 번에 세팅. 접기 = true, 펴기 = false 를
+   * 모든 turn id 에 대해 명시적으로 기록 — 기본 정책(마지막 turn 만 펼침)을 넘어 일괄 적용.
+   */
+  const toggleAllTurns = () => {
+    const want = !allTurnsCollapsed;
+    setUserOverride((prev) => {
+      const next = new Map(prev);
+      for (const t of turnSpans) next.set(t.id, want);
+      return next;
+    });
+  };
   return (
     <div className="flex flex-col gap-3">
-      <TraceHeader trace={trace} />
-      <div className="flex items-stretch gap-3">
+      <div className="flex items-start justify-between gap-3">
+        <TraceHeader trace={trace} />
+        {turnSpans.length > 1 && (
+          <button
+            type="button"
+            onClick={toggleAllTurns}
+            className="shrink-0 rounded-md border border-zinc-200 bg-white px-2 py-1 text-[11px] text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-300 dark:hover:bg-zinc-900"
+            title={
+              allTurnsCollapsed
+                ? "모든 턴을 펼쳐 자손 span 을 표시"
+                : "모든 턴을 접어 헤드라인만 표시"
+            }
+          >
+            {allTurnsCollapsed ? "▾ 모든 턴 펴기" : "▸ 모든 턴 접기"}
+          </button>
+        )}
+      </div>
+      <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1 rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
           <TimeAxis totalMs={totalMs} />
-          <ol className="scroll-thin max-h-[60vh] overflow-y-auto divide-y divide-zinc-100 dark:divide-zinc-900">
+          <ol className="divide-y divide-zinc-100 dark:divide-zinc-900">
             {visibleSpans.map((s) => (
               <SpanRow
                 key={s.id}
@@ -197,9 +235,20 @@ export default function SessionTraceV2View({
           내부 패널은 같은 폭을 inline style로 고정해 width 트랜지션 중에도
           내부 콘텐츠가 reflow되지 않는다(코드 블록이 압착되며 깨지는 현상 방지).
         */}
+        {/*
+          드로어: 트레이스 옆 인라인 컬럼. 닫힘 = 폭 0 (트레이스가 최대 폭으로 펼침),
+          열림 = DRAWER_WIDTH 만큼 폭 확장 → 트레이스가 그만큼 줄어든다.
+          행 리스트가 길어 페이지가 스크롤돼도 패널이 뷰포트 안에 머무르도록 sticky.
+          상단 탭바(SessionPanel sticky top-0, z-20) 아래로 비키도록 top-14 +
+          height calc(100vh - 4rem). overflow-hidden 으로 width 트랜지션 중 내부
+          코드 블록이 reflow 되지 않게 (안쪽 div 가 DRAWER_WIDTH 고정).
+        */}
         <div
-          className="shrink-0 overflow-hidden transition-[width] duration-300 ease-out"
-          style={{ width: open ? DRAWER_WIDTH : "0px" }}
+          className="sticky top-14 shrink-0 self-start overflow-hidden transition-[width] duration-300 ease-out"
+          style={{
+            width: open ? DRAWER_WIDTH : "0px",
+            height: "calc(100vh - 4rem)",
+          }}
           aria-hidden={!open}
         >
           <div className="h-full" style={{ width: DRAWER_WIDTH }}>
@@ -270,11 +319,10 @@ function Stat({
 const NAME_COL = "w-72";
 const TICKS = 10;
 /**
- * 우측 상세 드로어의 펼친 폭. 코드 블록이 압착되지 않을 최소(28rem)와
- * 큰 화면에서도 트레이스 영역을 침범하지 않을 최대(44rem) 사이에서
- * 뷰포트 38vw로 비례 스케일링.
+ * 우측 상세 드로어의 펼친 폭. 휠 스크롤 시 세로 스크롤바 등장/소멸로 vw 가 미세하게
+ * 변하면 폭이 떨림 — 코드 블록 가독성에 충분한 고정 폭(40rem)으로 못박는다.
  */
-const DRAWER_WIDTH = "clamp(28rem, 38vw, 44rem)";
+const DRAWER_WIDTH = "40rem";
 
 function TimeAxis({ totalMs }: { totalMs: number }) {
   const ticks = Array.from({ length: TICKS + 1 }, (_, i) => i);
@@ -389,7 +437,10 @@ const SpanRow = memo(function SpanRow({
               aria-hidden
             />
           )}
-          <span className="truncate font-mono text-[11px] text-zinc-800 dark:text-zinc-200">
+          <span
+            className="truncate font-mono text-[11px] text-zinc-800 dark:text-zinc-200"
+            title={span.label}
+          >
             {span.label}
           </span>
           {span.isError && (
@@ -419,6 +470,36 @@ const SpanRow = memo(function SpanRow({
   );
 });
 
+/**
+ * Agent/TeamCreate spawn 메타(team/name/subagent_type/agent_type)를 한 줄로 표시.
+ * 해당 도구가 아닌 span에는 아무것도 렌더 안 함.
+ */
+function SpawnMetaRow({ event }: { event: ParsedEvent }) {
+  const meta = spawnMeta(event);
+  if (!meta) return null;
+  const items: { label: string; value: string }[] = [];
+  if (meta.team) items.push({ label: "Team", value: meta.team });
+  if (meta.name) items.push({ label: "Name", value: meta.name });
+  if (meta.agentType) items.push({ label: "Type", value: meta.agentType });
+  if (meta.subagentType && !meta.agentType)
+    items.push({ label: "Subagent", value: meta.subagentType });
+  if (items.length === 0) return null;
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px]">
+      {items.map((it) => (
+        <span
+          key={it.label}
+          className="rounded bg-zinc-100 px-1.5 py-0.5 font-mono text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
+        >
+          <span className="text-zinc-500 dark:text-zinc-500">{it.label}</span>
+          {": "}
+          {it.value}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function SpanDetail({
   span,
   onClose,
@@ -429,6 +510,13 @@ function SpanDetail({
   const changes = useMemo(() => extractEditChanges(span.event), [span.event]);
   const hasDiff = changes.changes.length > 0;
   const duration = span.endMs - span.startMs;
+  const isAskUserQuestion = span.toolName === "AskUserQuestion";
+  /**
+   * AskUserQuestion span 은 시각화 카드만 기본 표시하고 raw input/result JSON 은 토글로 펼친다.
+   * 일반 도구 span 은 항상 raw 만 보이므로 영향 없음 (true 고정 동작).
+   */
+  const [showRaw, setShowRaw] = useState(false);
+  const showRawSections = !isAskUserQuestion || showRaw;
   return (
     <div className="flex h-full flex-col rounded-md border border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900">
       <div className="flex items-start justify-between gap-3 border-b border-zinc-200 px-4 py-2.5 dark:border-zinc-800">
@@ -459,6 +547,15 @@ function SpanDetail({
               </span>
             )}
           </div>
+          {span.subagentLabel && (
+            <div className="mt-1 flex items-center gap-1.5 text-[10px]">
+              <span className="text-zinc-500">소속</span>
+              <span className="rounded bg-violet-100 px-1.5 py-0.5 font-mono text-violet-700 dark:bg-violet-950 dark:text-violet-300">
+                {span.subagentLabel}
+              </span>
+            </div>
+          )}
+          <SpawnMetaRow event={span.event} />
           <div className="mt-0.5 font-mono text-[10px] text-zinc-500">
             {new Date(span.startMs).toLocaleString()}
           </div>
@@ -479,24 +576,43 @@ function SpanDetail({
         )}
         {(span.kind === "tool" || span.kind === "sidechain") && (
           <>
-            {span.event.text ? (
-              <SessionCodeBlock text={span.event.text} language="json" />
-            ) : (
-              <div className="text-zinc-500">{span.event.preview}</div>
+            {isAskUserQuestion && (
+              <>
+                <AskUserQuestionView
+                  useEvent={span.event}
+                  resultEvent={span.resultEvent}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowRaw((v) => !v)}
+                  className="self-start rounded-md border border-zinc-200 bg-white px-2 py-1 text-[11px] text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-300 dark:hover:bg-zinc-900"
+                >
+                  {showRaw ? "▾ raw JSON 접기" : "▸ raw JSON 자세히 보기"}
+                </button>
+              </>
             )}
-            {span.resultEvent && (
-              <div>
-                <div className="mb-0.5 text-[10px] uppercase tracking-wider text-zinc-500">
-                  ↳ 결과
-                </div>
-                {span.resultEvent.text ? (
-                  <SessionCodeBlock text={span.resultEvent.text} />
+            {showRawSections && (
+              <>
+                {span.event.text ? (
+                  <SessionCodeBlock text={span.event.text} language="json" />
                 ) : (
-                  <div className="text-[11px] text-zinc-600 dark:text-zinc-400">
-                    {span.resultEvent.preview}
+                  <div className="text-zinc-500">{span.event.preview}</div>
+                )}
+                {span.resultEvent && (
+                  <div>
+                    <div className="mb-0.5 text-[10px] uppercase tracking-wider text-zinc-500">
+                      ↳ 결과
+                    </div>
+                    {span.resultEvent.text ? (
+                      <SessionCodeBlock text={span.resultEvent.text} />
+                    ) : (
+                      <div className="text-[11px] text-zinc-600 dark:text-zinc-400">
+                        {span.resultEvent.preview}
+                      </div>
+                    )}
                   </div>
                 )}
-              </div>
+              </>
             )}
             {hasDiff && (
               <SessionDiffBlock
@@ -510,6 +626,188 @@ function SpanDetail({
           <LazyMarkdown text={span.event.text} />
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * AskUserQuestion 도구 호출의 입력에 들어가는 한 질문.
+ * Anthropic의 AskUserQuestion 스펙과 동일한 모양 (jsonl input 그대로).
+ */
+type AskUserQuestion = {
+  /** 사용자에게 보여줄 질문 본문. */
+  question: string;
+  /** 짧은 라벨/카테고리 (UI 헤더 칩). */
+  header?: string;
+  /** 다중 선택 허용 여부. */
+  multiSelect?: boolean;
+  /** 선택지. */
+  options: { label: string; description?: string }[];
+};
+
+/**
+ * AskUserQuestion tool_use input + tool_result 의 toolUseResult.answers 를 묶어
+ * 질문별 선택된 옵션 라벨 set 으로 정규화. multiSelect 답변은 ", " 구분 문자열이지만
+ * 라벨 자체에 ", " 가 들어있을 수 있으므로 옵션 라벨 매칭으로 안전하게 분해한다.
+ */
+function extractAskUserQuestion(
+  useEvent: ParsedEvent,
+  resultEvent: ParsedEvent | undefined,
+): {
+  questions: AskUserQuestion[];
+  /** 질문 텍스트 → 선택된 옵션 라벨들. */
+  selected: Record<string, Set<string>>;
+} | null {
+  const block = normalizeContent(useEvent.raw.message?.content).find(
+    (b): b is ContentBlock & { type: "tool_use" } => b.type === "tool_use",
+  );
+  const input =
+    block && typeof block.input === "object" && block.input !== null
+      ? (block.input as { questions?: unknown })
+      : null;
+  if (!input || !Array.isArray(input.questions)) return null;
+  const questions = input.questions.filter(
+    (q): q is AskUserQuestion =>
+      !!q &&
+      typeof q === "object" &&
+      typeof (q as AskUserQuestion).question === "string" &&
+      Array.isArray((q as AskUserQuestion).options),
+  );
+  if (questions.length === 0) return null;
+
+  const rawAnswers =
+    (resultEvent?.raw as { toolUseResult?: { answers?: unknown } } | undefined)
+      ?.toolUseResult?.answers;
+  const answers =
+    rawAnswers && typeof rawAnswers === "object"
+      ? (rawAnswers as Record<string, unknown>)
+      : {};
+
+  const selected: Record<string, Set<string>> = {};
+  for (const q of questions) {
+    const ans = answers[q.question];
+    const set = new Set<string>();
+    if (typeof ans === "string" && ans.length > 0) {
+      // 라벨 일치(전체 부분 문자열) 우선 — 라벨 안에 ", "가 있어도 안전.
+      for (const opt of q.options) {
+        if (ans === opt.label || ans.includes(opt.label)) set.add(opt.label);
+      }
+      // 라벨 매칭 실패 시 ", " split 으로 fallback.
+      if (set.size === 0) {
+        for (const part of ans.split(", ")) {
+          const t = part.trim();
+          if (t) set.add(t);
+        }
+      }
+    }
+    selected[q.question] = set;
+  }
+  return { questions, selected };
+}
+
+/**
+ * AskUserQuestion span 의 입력/응답을 read-only 체크 UI 로 보여준다.
+ * 단일 선택은 라디오, 다중 선택은 체크박스 모양(disabled). 선택된 옵션은 강조.
+ */
+function AskUserQuestionView({
+  useEvent,
+  resultEvent,
+}: {
+  /** AskUserQuestion tool_use 이벤트. */
+  useEvent: ParsedEvent;
+  /** 매칭된 tool_result 이벤트. 응답 전이면 undefined. */
+  resultEvent?: ParsedEvent;
+}) {
+  const data = useMemo(
+    () => extractAskUserQuestion(useEvent, resultEvent),
+    [useEvent, resultEvent],
+  );
+  if (!data) return null;
+  const answered = !!resultEvent;
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-zinc-500">
+        <span>질문 / 응답</span>
+        {!answered && (
+          <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[9px] font-medium normal-case text-amber-700 dark:bg-amber-950 dark:text-amber-300">
+            응답 대기
+          </span>
+        )}
+      </div>
+      <ol className="flex flex-col gap-3">
+        {data.questions.map((q, qi) => {
+          const sel = data.selected[q.question] ?? new Set<string>();
+          const multi = q.multiSelect === true;
+          return (
+            <li
+              key={`${qi}-${q.question}`}
+              className="rounded-md border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="text-[12px] font-medium text-zinc-900 dark:text-zinc-100">
+                  {q.question}
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  {q.header && (
+                    <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-mono text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
+                      {q.header}
+                    </span>
+                  )}
+                  <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-500 dark:bg-zinc-800 dark:text-zinc-500">
+                    {multi ? "다중" : "단일"}
+                  </span>
+                </div>
+              </div>
+              <ul className="mt-2 flex flex-col gap-1.5">
+                {q.options.map((opt, oi) => {
+                  const checked = sel.has(opt.label);
+                  return (
+                    <li
+                      key={`${oi}-${opt.label}`}
+                      className={cn(
+                        "flex items-start gap-2 rounded-md border px-2.5 py-1.5",
+                        checked
+                          ? "border-emerald-300 bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950/40"
+                          : "border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900/40",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "mt-0.5 inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center border text-[10px] leading-none",
+                          multi ? "rounded-sm" : "rounded-full",
+                          checked
+                            ? "border-emerald-500 bg-emerald-500 text-white"
+                            : "border-zinc-300 bg-white dark:border-zinc-700 dark:bg-zinc-950",
+                        )}
+                        aria-hidden
+                      >
+                        {checked ? (multi ? "✓" : "●") : ""}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div
+                          className={cn(
+                            "text-[12px]",
+                            checked
+                              ? "font-medium text-emerald-900 dark:text-emerald-200"
+                              : "text-zinc-800 dark:text-zinc-200",
+                          )}
+                        >
+                          {opt.label}
+                        </div>
+                        {opt.description && (
+                          <div className="mt-0.5 text-[11px] leading-snug text-zinc-600 dark:text-zinc-400">
+                            {opt.description}
+                          </div>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </li>
+          );
+        })}
+      </ol>
     </div>
   );
 }
@@ -546,11 +844,22 @@ function buildTrace(
     if (id) resultsById.set(id, ev);
   }
 
-  // 서버가 jsonl 필드 + .meta.json으로 미리 빌드한 안정적 매핑.
-  // 텍스트 패턴(이전의 "agentId:" 정규식) 의존 제거 — 100% 매칭 가능.
-  const taskUseIdByAgentId = new Map<string, string>(
-    Object.entries(subagentParents),
-  );
+  // 서브에이전트 식별: 서버가 jsonl + .meta.json으로 미리 빌드한 agentId → 부모 Agent toolUseId 매핑.
+  // 평탄 모델에서는 nesting에 쓰이지 않고, 행에 붙일 subagentLabel 칩을 만드는 데만 사용한다.
+  const agentEventByToolUseId = new Map<string, ParsedEvent>();
+  for (const ev of timed) {
+    if (ev.kind !== "tool_use" || ev.sidechain === true) continue;
+    if (ev.toolName !== "Agent") continue;
+    const id = extractToolUseId(ev.raw, "tool_use");
+    if (id) agentEventByToolUseId.set(id, ev);
+  }
+  const chipLabelByAgentId = new Map<string, string>();
+  for (const [agentId, taskUseId] of Object.entries(subagentParents)) {
+    const parentEv = agentEventByToolUseId.get(taskUseId);
+    if (!parentEv) continue;
+    const tag = subagentChipLabel(parentEv);
+    if (tag) chipLabelByAgentId.set(agentId, tag);
+  }
 
   const traceStart = timed[0].ts as number;
   const traceEnd = timed[timed.length - 1].ts as number;
@@ -579,45 +888,42 @@ function buildTrace(
   }
 
   const out: SpanV2[] = [];
+  // trace 전체에 걸쳐 단조 증가하는 노드 카운터. span.id 합성 키에 사용해
+  // 메인 + 다중 서브에이전트 jsonl 합본에서 같은 raw.uuid가 중복 등장해도 React key 충돌을 방지.
+  let traceNodeIdx = 0;
+  // 서버 매핑(agentId → 부모 Agent toolUseId). turn 안 nesting 복원에 사용.
+  const taskUseIdByAgentId = new Map<string, string>(
+    Object.entries(subagentParents),
+  );
 
   turns.forEach((turn, i) => {
-    const turnId = turn.user?.raw.uuid ?? `turn-${i}`;
+    const turnId = `turn-${i}`;
 
-    // 이 턴 안의 이벤트만 uuid → ParsedEvent 맵 (parentUuid 체인을 같은 턴 안에서만 따라감).
-    const eventByUuid = new Map<string, ParsedEvent>();
-    for (const ev of turn.events) {
-      if (ev.raw.uuid) eventByUuid.set(ev.raw.uuid, ev);
-    }
-
-    // 1차: 각 이벤트의 노드 생성. parent는 일단 turn으로 두고 2차 패스에서 재배선.
-    const nodeByEventUuid = new Map<string, SpanNode>();
-    // tool_use 노드를 tool_use_id로도 색인 — 서브에이전트 첫 이벤트가 agentId로 부모 Task를 찾을 때 사용.
+    // 1차: 노드 생성. tool_use_id → 메인 thread Agent 노드 인덱싱(같은 turn 안 sidechain 재배선용).
+    const nodes: SpanNode[] = [];
     const nodeByToolUseId = new Map<string, SpanNode>();
-    let key = 0;
     for (const ev of turn.events) {
       if (typeof ev.ts !== "number") continue;
-      const node = makeNode(ev, turnId, key++, resultsById);
+      const node = makeNode(ev, turnId, traceNodeIdx++, resultsById);
       if (!node) continue;
-      if (ev.raw.uuid) nodeByEventUuid.set(ev.raw.uuid, node);
-      if (ev.kind === "tool_use") {
+      nodes.push(node);
+      if (ev.kind === "tool_use" && ev.sidechain !== true) {
         const tuId = extractToolUseId(ev.raw, "tool_use");
-        if (tuId) nodeByToolUseId.set(tuId, node);
+        if (tuId && !nodeByToolUseId.has(tuId)) nodeByToolUseId.set(tuId, node);
       }
     }
 
-    // 2차: 서브에이전트 노드의 부모를 parentUuid 체인을 따라 가장 가까운 *메인 thread* tool_use 조상으로 재배선.
-    // 직전 서브에이전트 tool_use를 부모로 잡으면 한 서브에이전트 안의 Read N개가 끝없이 중첩되므로 건너뛴다.
-    // 결과적으로 한 Task 아래 그 서브에이전트가 만진 모든 도구가 형제(flat)로 정렬된다.
+    // 2차: 부모 결정. turn 안에서만 매칭하고 cross-turn은 turn 직계.
+    // sidechain → 같은 turn의 부모 Agent toolUse 노드로. 못 찾으면 turn 직계.
     const turnRoot: SpanNode = {
       span: {} as SpanV2,
       children: [],
     };
-    for (const node of nodeByEventUuid.values()) {
+    for (const node of nodes) {
       const ev = node.span.event;
       const isSide = ev.sidechain === true;
       let parent: SpanNode | undefined;
       if (isSide) {
-        // 우선 agentId로 부모 Task 직접 lookup. 서브에이전트 첫 이벤트는 parentUuid가 null이라 이게 유일한 경로.
         const agentId =
           typeof (ev.raw as { agentId?: unknown }).agentId === "string"
             ? ((ev.raw as { agentId?: string }).agentId ?? "")
@@ -625,22 +931,9 @@ function buildTrace(
         if (agentId) {
           const taskUseId = taskUseIdByAgentId.get(agentId);
           if (taskUseId) parent = nodeByToolUseId.get(taskUseId);
-        }
-        // 폴백: parentUuid 체인을 따라 메인 thread의 tool_use 조상을 찾는다.
-        if (!parent) {
-          let cur: ParsedEvent | undefined = ev;
-          const seen = new Set<string>();
-          while (cur) {
-            const pUuid = cur.raw.parentUuid;
-            if (!pUuid || seen.has(pUuid)) break;
-            seen.add(pUuid);
-            const cand = nodeByEventUuid.get(pUuid);
-            if (cand && cand.span.kind === "tool" && cand.span.event.sidechain !== true) {
-              parent = cand;
-              break;
-            }
-            cur = eventByUuid.get(pUuid);
-          }
+          // 칩 라벨은 부모 노드가 같은 턴에 없어도 trace 레벨 맵에서 가져온다.
+          const chip = chipLabelByAgentId.get(agentId);
+          if (chip) node.span.subagentLabel = chip;
         }
       }
       if (parent) {
@@ -692,14 +985,15 @@ function buildTrace(
 function makeNode(
   ev: ParsedEvent,
   turnId: string,
-  fallbackKey: number,
+  /** trace 전체에 단조 증가하는 인덱스. span.id를 항상 unique하게 만든다 (raw.uuid 중복 회피). */
+  nodeIdx: number,
   resultsById: Map<string, ParsedEvent>,
 ): SpanNode | null {
   if (typeof ev.ts !== "number") return null;
   if (ev.kind === "assistant") {
     return {
       span: {
-        id: ev.raw.uuid ?? `assistant-${fallbackKey}`,
+        id: `n${nodeIdx}`,
         parentId: turnId,
         depth: 1,
         label: ev.model ?? "assistant",
@@ -725,10 +1019,10 @@ function makeNode(
     const isSide = ev.sidechain === true;
     return {
       span: {
-        id: ev.raw.uuid ?? id ?? `tool-${fallbackKey}`,
+        id: `n${nodeIdx}`,
         parentId: turnId,
         depth: 1,
-        label: ev.toolName ?? "tool",
+        label: toolLabel(ev),
         kind: isSide ? "sidechain" : "tool",
         startMs: ev.ts,
         endMs,
@@ -741,6 +1035,77 @@ function makeNode(
     };
   }
   return null;
+}
+
+/**
+ * 트리에 표시할 도구 라벨. 좌측 행은 도구 이름만 — Team/Name/Type 같은 식별 필드는
+ * 우측 상세 패널(SpanDetail)에서 노출한다 (좁은 행을 어지럽히지 않기 위함).
+ */
+function toolLabel(ev: ParsedEvent): string {
+  return ev.toolName ?? "tool";
+}
+
+/**
+ * Agent/TeamCreate spawn 정보 추출. 우측 상세 패널에서 표시.
+ * Agent: `{ team?: string, name?: string, subagentType?: string }`
+ * TeamCreate: `{ team?: string, agentType?: string }`
+ * 외 도구는 null.
+ */
+function spawnMeta(ev: ParsedEvent): {
+  team: string | null;
+  name: string | null;
+  subagentType: string | null;
+  agentType: string | null;
+} | null {
+  const tool = ev.toolName ?? "";
+  if (tool !== "Agent" && tool !== "TeamCreate") return null;
+  const block = normalizeContent(ev.raw.message?.content).find(
+    (b) => b.type === "tool_use",
+  );
+  const input =
+    block && block.type === "tool_use"
+      ? (block as { input?: unknown }).input
+      : undefined;
+  if (!input || typeof input !== "object") return null;
+  const obj = input as Record<string, unknown>;
+  return {
+    team: typeof obj.team_name === "string" ? obj.team_name : null,
+    name: typeof obj.name === "string" ? obj.name : null,
+    subagentType:
+      typeof obj.subagent_type === "string" ? obj.subagent_type : null,
+    agentType: typeof obj.agent_type === "string" ? obj.agent_type : null,
+  };
+}
+
+/**
+ * 서브에이전트 행에 붙일 짧은 식별 칩 라벨. 부모 Agent tool_use input에서 파생.
+ * 우선순위: input.name (TeamCreate) → input.subagent_type → input.description 첫 단어.
+ * 길이 제한: 30자 (truncate). 전체 내용은 부모 Agent span을 펼쳐서 확인 가능.
+ */
+function subagentChipLabel(parentEvent: ParsedEvent): string | null {
+  const block = normalizeContent(parentEvent.raw.message?.content).find(
+    (b) => b.type === "tool_use",
+  );
+  const input =
+    block && block.type === "tool_use"
+      ? (block as { input?: unknown }).input
+      : undefined;
+  if (!input || typeof input !== "object") return null;
+  const obj = input as Record<string, unknown>;
+  const name = typeof obj.name === "string" ? obj.name : null;
+  if (name) return truncateChip(name);
+  const subType =
+    typeof obj.subagent_type === "string" ? obj.subagent_type : null;
+  const desc = typeof obj.description === "string" ? obj.description : null;
+  if (subType && desc) return truncateChip(`${subType}: ${desc}`);
+  if (subType) return truncateChip(subType);
+  if (desc) return truncateChip(desc);
+  return null;
+}
+
+function truncateChip(s: string): string {
+  const trimmed = s.trim();
+  return trimmed.length > 30 ? `${trimmed.slice(0, 29)}…` : trimmed;
 }
 
 type SpanNode = { span: SpanV2; children: SpanNode[] };

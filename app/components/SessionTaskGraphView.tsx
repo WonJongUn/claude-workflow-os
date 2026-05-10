@@ -67,7 +67,7 @@ export default function SessionTaskGraphView({
       <div className="flex items-stretch gap-3">
         <div className="min-w-0 flex-1 rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
           <TimeAxis minMs={layout.minMs} range={range} />
-          <div className="scroll-thin max-h-[60vh] overflow-y-auto divide-y divide-zinc-100 dark:divide-zinc-900">
+          <div className="divide-y divide-zinc-100 dark:divide-zinc-900">
             {layout.lanes.map((lane) => (
               <Lane
                 key={lane.taskId}

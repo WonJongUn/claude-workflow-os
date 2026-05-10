@@ -4,6 +4,7 @@ import { EventEmitter } from "node:events";
 import { createCache } from "@/lib/cache";
 import { projectRoot } from "@/lib/paths";
 import {
+  extractTaskResultId,
   extractTimestamp,
   stringField,
   walkToolUses,
@@ -40,9 +41,15 @@ export type SessionTaskNotification = {
 /**
  * 외부 구독자(SSE 라우트)가 'event'를 listen해 클라에 흘려보낸다.
  * Note: 한 프로세스 내 in-memory bus. 멀티 인스턴스로 가면 redis pub/sub 등 필요.
+ *
+ * globalThis hoist 이유: Next dev HMR이 모듈을 중복 evaluate해 emitter가 갈라지면
+ * watcher의 emit과 SSE 라우트의 listen이 어긋나 알림 누락. ticket-store.ts와 동일 패턴.
  */
-export const sessionTaskEvents = new EventEmitter();
+const G = globalThis as unknown as { __sessionTaskEvents?: EventEmitter };
+export const sessionTaskEvents: EventEmitter =
+  G.__sessionTaskEvents ?? new EventEmitter();
 sessionTaskEvents.setMaxListeners(50);
+if (!G.__sessionTaskEvents) G.__sessionTaskEvents = sessionTaskEvents;
 
 /** 파일별 마지막으로 읽은 byte offset. 다음 변경 시 그 지점부터만 read. */
 const offsetByPath = new Map<string, number>();
@@ -52,17 +59,23 @@ const offsetByPath = new Map<string, number>();
  * TaskCreate가 subject를 명시할 때 캐시해두고, 다음 update에 빈 subject면 채워준다.
  * 키 형식: `${sessionId}:${taskId}`.
  *
- * 다른 이 모듈의 Map들(`offsetByPath`, `createCounter`, `partialByPath`, `readChainByPath`)은
+ * 다른 이 모듈의 Map들(`offsetByPath`, `pendingCreate`, `partialByPath`, `readChainByPath`)은
  * 캐시가 아니라 watcher의 *상태 머신* (offset/카운터/스트림 버퍼/in-flight queue)이라 NamedCache로 옮기지 않는다.
  */
 const subjectCache = createCache<string, string>("session-watcher.subject");
 /**
- * 세션별 누적 TaskCreate 카운터.
- * jsonl의 TaskCreate tool_use input에는 taskId 필드가 없고(결과에서 부여됨),
- * `replaySessionTaskTimeline`도 동일하게 created.length + 1을 id로 사용한다.
- * 이 카운터를 watcher에서 같은 규칙으로 유지해 TaskUpdate의 taskId와 매칭한다.
+ * TaskCreate가 받은 *진짜* harness taskId를 회수하기 위한 보류 버퍼.
+ * 키: `${sessionId}:${tool_use_id}`. 같은 라인 또는 후속 라인의 tool_result(envelope.toolUseResult.task.id)가
+ * 도착하면 진짜 id로 알림 emit. 도착 전엔 emit하지 않는다 — UI가 placeholder id를
+ * 진짜 id로 갱신하는 채널이 없기 때문.
+ *
+ * Claude Code 2.1+에서 taskId는 harness 전역 시퀀스라 우리가 1..N으로 합성하면
+ * TaskUpdate.input.taskId 와 영원히 어긋난다.
  */
-const createCounter = new Map<string, number>();
+const pendingCreate = new Map<
+  string,
+  { subject: string | undefined; ts: number }
+>();
 /**
  * 직전 read에서 line 경계로 종결되지 않고 남은 미완성 tail.
  * 다음 read에서 prepend해 join함으로써 jsonl이 line-aligned로 도착하지 않아도
@@ -74,17 +87,54 @@ const partialByPath = new Map<string, string>();
  * fs.watch가 같은 파일에 burst로 fire해도 race 없이 순차 처리된다.
  */
 const readChainByPath = new Map<string, Promise<void>>();
+/**
+ * 세션별 직전 TodoWrite 스냅샷. content → status 매핑.
+ * TodoWrite는 호출 때마다 todos 배열 *전체*를 갱신하므로(stable id 없음),
+ * content를 안정 키로 삼아 새 항목 / 상태 변경을 diff한다.
+ */
+const todoSnapshotBySession = new Map<string, Map<string, string>>();
 
-/** watcher가 한 번 시작됐는지. */
-let started = false;
+/** TodoWrite의 status 필드를 SessionTaskNotification.status union으로 좁힌다. */
+function validTaskStatus(
+  s: string,
+): "pending" | "in_progress" | "completed" | "deleted" | undefined {
+  return s === "pending" ||
+    s === "in_progress" ||
+    s === "completed" ||
+    s === "deleted"
+    ? s
+    : undefined;
+}
+
+/**
+ * watcher 시작 플래그 + FSWatcher 인스턴스를 globalThis에 보관.
+ * dev HMR로 모듈이 reload돼도 fs.watch가 누적되지 않게 한다 — 이전 watcher를 close하고
+ * 다시 만든다. (모듈 스코프 변수면 reload마다 새 watcher가 추가되며 같은 jsonl 변경을
+ * N번 emit → 알림 중복.)
+ */
+declare global {
+
+  var __sessionWatcherStarted: boolean | undefined;
+
+  var __sessionWatcherInstance: import("node:fs").FSWatcher | undefined;
+}
 
 /**
  * 멱등 — 처음 호출 시 watcher를 띄우고, 이후 호출은 noop.
  * SSE 라우트에서 첫 요청이 들어올 때 호출.
  */
 export async function ensureWatcher(): Promise<void> {
-  if (started) return;
-  started = true;
+  if (globalThis.__sessionWatcherStarted) return;
+  globalThis.__sessionWatcherStarted = true;
+  // 혹시 이전 모듈 인스턴스가 남긴 watcher가 있으면 닫는다 (HMR 누적 방어).
+  if (globalThis.__sessionWatcherInstance) {
+    try {
+      globalThis.__sessionWatcherInstance.close();
+    } catch {
+      // 이미 닫혀 있어도 무시.
+    }
+    globalThis.__sessionWatcherInstance = undefined;
+  }
   await initOffsets();
   await startWatch();
 }
@@ -120,6 +170,8 @@ async function warmFile(filePath: string): Promise<void> {
     return;
   }
   const sessionId = path.basename(filePath, ".jsonl");
+  // warmFile 한정의 보류 버퍼 — 라인 순회 동안만 쓰이고 함수 끝나면 버린다.
+  const localPending = new Map<string, string | undefined>();
   for (const line of raw.split("\n")) {
     if (!line) continue;
     let obj: unknown;
@@ -128,24 +180,58 @@ async function warmFile(filePath: string): Promise<void> {
     } catch {
       continue;
     }
-    walkToolUses(obj, (name, input) => {
+    // tool_result로 진짜 taskId 회수 — subjectCache 키를 진짜 id로 박는다.
+    const resolved = extractTaskResultId(obj);
+    if (resolved) {
+      const subject = localPending.get(resolved.toolUseId);
+      if (subject !== undefined) {
+        if (subject) {
+          subjectCache.set(`${sessionId}:${resolved.taskId}`, subject);
+        }
+        localPending.delete(resolved.toolUseId);
+      }
+    }
+    walkToolUses(obj, (name, input, toolUseId) => {
       if (name === "TaskCreate") {
-        const next = (createCounter.get(sessionId) ?? 0) + 1;
-        createCounter.set(sessionId, next);
         const subject = stringField(input, "subject");
-        if (subject) subjectCache.set(`${sessionId}:${next}`, subject);
+        if (toolUseId) localPending.set(toolUseId, subject);
       } else if (name === "TaskUpdate") {
         const taskId = stringField(input, "taskId");
         const subject = stringField(input, "subject");
         if (subject && taskId) {
           subjectCache.set(`${sessionId}:${taskId}`, subject);
         }
+      } else if (name === "TodoWrite") {
+        // 마지막 TodoWrite의 todos를 스냅샷으로 두어 watcher 재시작 후 첫 호출이
+        // 모든 기존 항목을 새로 추가된 것처럼 emit하지 않도록 한다.
+        const todosRaw = (input as Record<string, unknown>)?.todos;
+        if (!Array.isArray(todosRaw)) return;
+        const snap = new Map<string, string>();
+        for (const item of todosRaw) {
+          if (!item || typeof item !== "object") continue;
+          const it = item as Record<string, unknown>;
+          const content = typeof it.content === "string" ? it.content : "";
+          const status = typeof it.status === "string" ? it.status : "pending";
+          if (content) snap.set(content, status);
+        }
+        todoSnapshotBySession.set(sessionId, snap);
       }
     });
   }
 }
 
-/** 디렉터리를 재귀 탐색해 *.jsonl 파일 절대 경로를 모은다. */
+/**
+ * 메인 세션 jsonl만 추적 대상. 서브에이전트(`<sessionId>/subagents/agent-*.jsonl`)는
+ * read-time bundling으로 처리되므로 watcher가 잡으면 안 된다 — 알림 sessionId가
+ * `agent-<id>`로 망가져 라우팅이 깨짐 (예: /sessions/agent-xxx?tab=tasks).
+ */
+function isMainSessionJsonl(absPath: string): boolean {
+  if (!absPath.endsWith(".jsonl")) return false;
+  // path separator는 OS에 따라 다르지만 macOS/Linux 한정이라 '/'로 충분.
+  return !absPath.includes("/subagents/");
+}
+
+/** 디렉터리를 재귀 탐색해 메인 세션 *.jsonl 파일 절대 경로를 모은다 (서브에이전트 제외). */
 async function listJsonl(root: string): Promise<string[]> {
   const out: string[] = [];
   async function walk(dir: string): Promise<void> {
@@ -158,8 +244,10 @@ async function listJsonl(root: string): Promise<string[]> {
     for (const ent of entries) {
       const p = path.join(dir, ent.name);
       if (ent.isDirectory()) {
+        // subagents 디렉터리는 통째로 skip (자식까지).
+        if (ent.name === "subagents") continue;
         await walk(p);
-      } else if (ent.isFile() && ent.name.endsWith(".jsonl")) {
+      } else if (ent.isFile() && isMainSessionJsonl(p)) {
         out.push(p);
       }
     }
@@ -179,16 +267,18 @@ async function startWatch(): Promise<void> {
   // dynamic import로 Node 의존성을 server bundle에만 둔다.
   const fsSync = await import("node:fs");
   try {
-    fsSync.watch(
+    const watcher = fsSync.watch(
       root,
       { recursive: true, persistent: false },
       (_eventType, filename) => {
         if (!filename) return;
-        if (!filename.endsWith(".jsonl")) return;
         const abs = path.join(root, filename);
+        if (!isMainSessionJsonl(abs)) return;
         void scheduleRead(abs);
       },
     );
+    // HMR 시 이전 인스턴스를 close할 수 있도록 globalThis에 보관.
+    globalThis.__sessionWatcherInstance = watcher;
   } catch {
     // watch 실패해도 앱 자체는 계속 동작. (드물게 권한/경로 문제)
   }
@@ -274,23 +364,34 @@ async function readNew(filePath: string): Promise<void> {
       continue;
     }
     const ts = extractTimestamp(obj);
-    walkToolUses(obj, (name, input) => {
-      if (name === "TaskCreate") {
-        // jsonl tool_use input에는 taskId가 없고 결과에서 부여됨 — 세션별 순번으로 합성.
-        const next = (createCounter.get(sessionId) ?? 0) + 1;
-        createCounter.set(sessionId, next);
-        const taskId = String(next);
-        const subject = stringField(input, "subject");
-        if (subject) subjectCache.set(`${sessionId}:${taskId}`, subject);
+    // tool_result로 진짜 taskId 회수 → 보류 TaskCreate를 emit.
+    const resolved = extractTaskResultId(obj);
+    if (resolved) {
+      const pendingKey = `${sessionId}:${resolved.toolUseId}`;
+      const pending = pendingCreate.get(pendingKey);
+      if (pending) {
+        if (pending.subject) {
+          subjectCache.set(`${sessionId}:${resolved.taskId}`, pending.subject);
+        }
         sessionTaskEvents.emit("event", {
           kind: "create",
           sessionId,
           filePath,
-          taskId,
+          taskId: resolved.taskId,
           status: "pending",
-          subject,
-          ts,
+          subject: pending.subject,
+          ts: pending.ts,
         } satisfies SessionTaskNotification);
+        pendingCreate.delete(pendingKey);
+      }
+    }
+    walkToolUses(obj, (name, input, toolUseId) => {
+      if (name === "TaskCreate") {
+        // 진짜 taskId는 같은/후속 라인의 tool_result에서 옴. 보류 등록만 한다.
+        const subject = stringField(input, "subject");
+        if (toolUseId) {
+          pendingCreate.set(`${sessionId}:${toolUseId}`, { subject, ts });
+        }
       } else if (name === "TaskUpdate") {
         const taskId = stringField(input, "taskId") ?? "";
         const status = stringField(input, "status");
@@ -312,6 +413,62 @@ async function readNew(filePath: string): Promise<void> {
           subject,
           ts,
         } satisfies SessionTaskNotification);
+      } else if (name === "TodoWrite") {
+        // TodoWrite는 todos 배열을 *통째로* 다시 쓴다. content를 안정 키로 직전 스냅샷과 diff:
+        //   - 새 content → kind=create
+        //   - 같은 content + 상태 변경 → kind=update
+        //   - 사라진 content → kind=update with status=deleted
+        const todosRaw = (input as Record<string, unknown>)?.todos;
+        if (!Array.isArray(todosRaw)) return;
+        const next = new Map<string, string>();
+        for (const item of todosRaw) {
+          if (!item || typeof item !== "object") continue;
+          const it = item as Record<string, unknown>;
+          const content = typeof it.content === "string" ? it.content : "";
+          const status = typeof it.status === "string" ? it.status : "pending";
+          if (!content) continue;
+          next.set(content, status);
+        }
+        const prev = todoSnapshotBySession.get(sessionId) ?? new Map();
+        for (const [content, status] of next) {
+          const prevStatus = prev.get(content);
+          if (prevStatus === undefined) {
+            // 새 항목 — content를 taskId 자리에 넣어 알림에 제목으로 표시.
+            sessionTaskEvents.emit("event", {
+              kind: "create",
+              sessionId,
+              filePath,
+              taskId: content,
+              status: validTaskStatus(status),
+              subject: content,
+              ts,
+            } satisfies SessionTaskNotification);
+          } else if (prevStatus !== status) {
+            sessionTaskEvents.emit("event", {
+              kind: "update",
+              sessionId,
+              filePath,
+              taskId: content,
+              status: validTaskStatus(status),
+              subject: content,
+              ts,
+            } satisfies SessionTaskNotification);
+          }
+        }
+        for (const [content] of prev) {
+          if (!next.has(content)) {
+            sessionTaskEvents.emit("event", {
+              kind: "update",
+              sessionId,
+              filePath,
+              taskId: content,
+              status: "deleted",
+              subject: content,
+              ts,
+            } satisfies SessionTaskNotification);
+          }
+        }
+        todoSnapshotBySession.set(sessionId, next);
       }
     });
   }

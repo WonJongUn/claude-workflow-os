@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import { useNotify } from "./notifications";
+import { subscribeSse } from "./sse-bus";
 import type { SessionTaskNotification } from "@/lib/session-watcher";
 
 /**
@@ -15,14 +16,7 @@ import type { SessionTaskNotification } from "@/lib/session-watcher";
 export function SessionTaskNotifier() {
   const notify = useNotify();
   useEffect(() => {
-    const es = new EventSource("/api/sse/session-tasks");
-    es.onmessage = (m) => {
-      let data: SessionTaskNotification;
-      try {
-        data = JSON.parse(m.data) as SessionTaskNotification;
-      } catch {
-        return;
-      }
+    return subscribeSse<SessionTaskNotification>("session-task", (data) => {
       notify({
         level: data.kind === "create" ? "info" : levelOf(data.status),
         category: "task",
@@ -30,11 +24,7 @@ export function SessionTaskNotifier() {
         detail: detailOf(data),
         href: hrefOf(data),
       });
-    };
-    es.onerror = () => {
-      // 자동 재연결 — 브라우저 EventSource 기본 동작에 맡긴다.
-    };
-    return () => es.close();
+    });
   }, [notify]);
   return null;
 }

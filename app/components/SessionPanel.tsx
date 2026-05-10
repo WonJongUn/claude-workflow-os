@@ -1182,7 +1182,10 @@ function SessionTasksPanel({
     focusTaskId ?? null,
   );
   useEffect(() => {
+    // focusTaskId(외부 prop)와 transientFocusId(내부 강조 상태) 동기화가 effect 본문 그 자체이므로
+    // setState가 effect의 부수효과 본질이다. lazy init으로 해결되지 않음 (재진입에도 강조 필요).
     if (!focusTaskId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setTransientFocusId(null);
       return;
     }

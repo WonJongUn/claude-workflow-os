@@ -114,6 +114,12 @@ export async function listAllSessions(): Promise<SessionInfo[]> {
  * 어느 파일 하나라도 변경되면 자동 무효화된다.
  *
  * 파일을 못 읽으면 null. 메인이 사라진 케이스도 포함.
+ *
+ * **중요 (E6 — docs/internals/session-jsonl-spec.md §8)**:
+ * 본문은 *파일 순서*(path 오름차순)로 concat 되어 **시간순이 아니다**. 메인 뒤에 서브에이전트
+ * jsonl이 따라붙는데, 서브에이전트의 ts가 메인 중간 시점에 끼어들 수 있다. 상태 머신을 굴리는
+ * 모든 호출자는 본문을 라인 단위로 파싱한 뒤 `ts` 기준으로 *반드시* 정렬해서 처리해야 한다.
+ * 정렬 없이 처리하면 나중 ts의 업데이트가 빠른 ts의 업데이트에 의해 덮이는 등 정합성이 깨진다.
  */
 export async function readSessionBundle(
   mainJsonlPath: string,
@@ -197,7 +203,7 @@ export async function buildSubagentParentMap(
   } catch {
     return {};
   }
-  // (agentId, promptId, description) 수집.
+  // (agentId, promptId, description, agentType) 수집. promptId는 같은 turn 내 매칭 키.
   const subs = await Promise.all(
     entries
       .filter((name) => name.startsWith("agent-") && name.endsWith(".jsonl"))
@@ -211,21 +217,28 @@ export async function buildSubagentParentMap(
         ]);
         let promptId: string | null = null;
         try {
-          const obj = firstLine ? (JSON.parse(firstLine) as { promptId?: string }) : null;
+          const obj = firstLine
+            ? (JSON.parse(firstLine) as { promptId?: string })
+            : null;
           if (obj && typeof obj.promptId === "string") promptId = obj.promptId;
         } catch {
           // ignore
         }
         let description: string | null = null;
+        let agentType: string | null = null;
         if (metaRaw) {
           try {
-            const meta = JSON.parse(metaRaw) as { description?: string };
+            const meta = JSON.parse(metaRaw) as {
+              description?: string;
+              agentType?: string;
+            };
             if (typeof meta.description === "string") description = meta.description;
+            if (typeof meta.agentType === "string") agentType = meta.agentType;
           } catch {
             // ignore
           }
         }
-        return { agentId, promptId, description };
+        return { agentId, promptId, description, agentType };
       }),
   );
   if (subs.length === 0) return {};
@@ -239,8 +252,18 @@ export async function buildSubagentParentMap(
   } catch {
     return {};
   }
-  type AgentUse = { id: string; description: string | null };
+  type AgentUse = {
+    id: string;
+    description: string | null;
+    name: string | null;
+    team: string | null;
+    /** 메인 라인 ts (epoch ms). 전역 매칭에서 가장 이른 spawn 우선용. */
+    ts: number;
+  };
   const agentUsesByPromptId = new Map<string, AgentUse[]>();
+  // 전역 fallback용 평탄 목록. TeamCreate wake-up이 새 agent-<id>.jsonl을 만들면서
+  // first-line promptId를 wake 시점 lead pid로 stamp하는 케이스를 회수.
+  const allTeamAgentUses: AgentUse[] = [];
   let currentPromptId: string | null = null;
   for (const line of mainRaw.split("\n")) {
     if (!line) continue;
@@ -255,6 +278,11 @@ export async function buildSubagentParentMap(
     const msg = obj.message as { content?: unknown } | undefined;
     const content = msg?.content;
     if (!Array.isArray(content)) continue;
+    let lineTs = 0;
+    if (typeof obj.timestamp === "string") {
+      const t = Date.parse(obj.timestamp);
+      if (!Number.isNaN(t)) lineTs = t;
+    }
     for (const b of content) {
       if (!b || typeof b !== "object") continue;
       const block = b as Record<string, unknown>;
@@ -265,26 +293,52 @@ export async function buildSubagentParentMap(
         input && typeof input.description === "string"
           ? (input.description as string)
           : null;
+      const inputName =
+        input && typeof input.name === "string" ? (input.name as string) : null;
+      const team =
+        input && typeof input.team_name === "string"
+          ? (input.team_name as string)
+          : null;
       if (!id) continue;
+      const use: AgentUse = { id, description, name: inputName, team, ts: lineTs };
       let arr = agentUsesByPromptId.get(currentPromptId);
       if (!arr) {
         arr = [];
         agentUsesByPromptId.set(currentPromptId, arr);
       }
-      arr.push({ id, description });
+      arr.push(use);
+      // TeamCreate spawn(team_name + name 둘 다)만 전역 매칭 후보. 일반 Task spawn은 wake-up 개념 없어 제외.
+      if (team && inputName) allTeamAgentUses.push(use);
     }
   }
 
   const out: Record<string, string> = {};
   for (const sub of subs) {
-    if (!sub.promptId) continue;
-    const candidates = agentUsesByPromptId.get(sub.promptId) ?? [];
-    if (candidates.length === 0) continue;
-    // 1) description 일치 우선.
-    const match =
-      candidates.find((c) => c.description === sub.description) ??
-      // 2) 후보가 하나뿐이면 그것.
-      (candidates.length === 1 ? candidates[0] : undefined);
+    const candidates = sub.promptId
+      ? (agentUsesByPromptId.get(sub.promptId) ?? [])
+      : [];
+    // 매칭 우선순위 (docs/internals/session-jsonl-spec.md §5.4):
+    // 1) 같은 promptId 안에서 meta.description == input.description (일반 Agent 호출)
+    // 2) 같은 promptId 안에서 meta.agentType == input.name (TeamCreate spawn)
+    // 3) 같은 promptId 안에 후보가 하나뿐이면 그것.
+    // 4) (전역 fallback) TeamCreate spawn 중 meta.agentType == input.name인 후보 중 가장 이른 spawn —
+    //    TeamCreate가 idle 팀원을 wake할 때 새 agent-<id>.jsonl을 만들면서 first-line promptId를
+    //    wake 시점 lead pid로 stamp하는 케이스를 회수. 같은 (team, name) 조합이 한 세션에 여러 번
+    //    spawn되면 가장 이른 것에 attribute (보통 origin spawn).
+    let match: AgentUse | undefined =
+      sub.description != null
+        ? candidates.find((c) => c.description === sub.description)
+        : undefined;
+    if (!match && sub.agentType != null) {
+      match = candidates.find((c) => c.name === sub.agentType);
+    }
+    if (!match && candidates.length === 1) match = candidates[0];
+    if (!match && sub.agentType != null) {
+      const globalMatches = allTeamAgentUses
+        .filter((c) => c.name === sub.agentType)
+        .sort((a, b) => a.ts - b.ts);
+      if (globalMatches.length > 0) match = globalMatches[0];
+    }
     if (match) out[sub.agentId] = match.id;
   }
   return out;

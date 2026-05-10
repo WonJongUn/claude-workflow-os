@@ -1,7 +1,7 @@
 "use client";
 
-import { lazy, memo, Suspense, useMemo, useRef, useState } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { lazy, memo, Suspense, useEffect, useMemo, useState } from "react";
+import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import { SessionDiffBlock } from "./SessionDiffBlock";
 import { SortToggle, Tooltip, type SortOrder } from "./ui";
 import { LazyMarkdown } from "./LazyMarkdown";
@@ -74,7 +74,7 @@ export function SessionLogView({
         </>
       )}
       {view === "raw" && (
-        <pre className="scroll-thin max-h-[50vh] overflow-auto whitespace-pre-wrap break-all rounded-md border border-zinc-200 bg-zinc-50 p-4 font-mono text-[11px] leading-relaxed text-zinc-800 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-200">
+        <pre className="whitespace-pre-wrap break-all rounded-md border border-zinc-200 bg-zinc-50 p-4 font-mono text-[11px] leading-relaxed text-zinc-800 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-200">
           {body}
         </pre>
       )}
@@ -206,40 +206,58 @@ function Timeline({ events }: { events: ParsedEvent[] }) {
     () => (order === "desc" ? [...events].reverse() : events),
     [events, order],
   );
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const virt = useVirtualizer({
+  // 페이지(window) 스크롤을 따라가는 가상화. 컨테이너에 max-h를 두지 않아야
+  // 세션 상세 페이지의 sticky 탭 바가 모든 탭에서 일관되게 동작한다.
+  // scrollMargin은 리스트의 페이지 내 오프셋(상단 헤더/탭/통계 영역 높이)으로,
+  // 마운트/리사이즈 후 ResizeObserver로 측정해 갱신한다 (렌더 중 ref 접근 금지).
+  const [listEl, setListEl] = useState<HTMLUListElement | null>(null);
+  const [scrollMargin, setScrollMargin] = useState(0);
+  useEffect(() => {
+    if (!listEl) return;
+    const measure = () => setScrollMargin(listEl.offsetTop);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(document.body);
+    window.addEventListener("resize", measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [listEl]);
+  const virt = useWindowVirtualizer({
     count: ordered.length,
-    getScrollElement: () => scrollRef.current,
     estimateSize: () => 80,
     overscan: 6,
     measureElement: (el) => el.getBoundingClientRect().height,
+    scrollMargin,
   });
   return (
     <div className="flex flex-col gap-2">
       <div className="flex justify-end">
         <SortToggle order={order} onChange={setOrder} />
       </div>
-      <div ref={scrollRef} className="scroll-thin max-h-[70vh] overflow-y-auto">
-        <ul
-          className="relative divide-y divide-zinc-100 dark:divide-zinc-900"
-          style={{ height: virt.getTotalSize() }}
-        >
-          {virt.getVirtualItems().map((row) => {
-            const ev = ordered[row.index];
-            return (
-              <li
-                key={row.key}
-                ref={virt.measureElement}
-                data-index={row.index}
-                className="absolute inset-x-0"
-                style={{ transform: `translateY(${row.start}px)` }}
-              >
-                <TimelineRow event={ev} />
-              </li>
-            );
-          })}
-        </ul>
-      </div>
+      <ul
+        ref={setListEl}
+        className="relative divide-y divide-zinc-100 dark:divide-zinc-900"
+        style={{ height: virt.getTotalSize() }}
+      >
+        {virt.getVirtualItems().map((row) => {
+          const ev = ordered[row.index];
+          return (
+            <li
+              key={row.key}
+              ref={virt.measureElement}
+              data-index={row.index}
+              className="absolute inset-x-0"
+              style={{
+                transform: `translateY(${row.start - scrollMargin}px)`,
+              }}
+            >
+              <TimelineRow event={ev} />
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }
@@ -362,14 +380,20 @@ export type SessionParsedEvent = ParsedEvent;
 export type SessionLogStats = SessionStats;
 
 // Claude Code 내부 메타/캐시 이벤트 — 데이터 분석 결과 모두 노이즈로 판정.
-// - ai-title(같은 제목 N회), last-prompt(ts 없음 + user 라인과 중복), file-history-snapshot(내부 백업 메타)
-// - attachment(같은 N가지가 수백 번 반복), queue-operation(user 입력의 큐 미러)
+// 분류 근거: docs/internals/session-jsonl-spec.md §3 (라인 카테고리 표).
+// - ai-title (같은 제목 N회), last-prompt (ts 없음 + user 라인과 중복)
+// - file-history-snapshot (내부 백업 메타), agent-name (세션 displayName 메타)
+// - attachment (시스템 부속 정보, 종류별 N회 반복)
+// - queue-operation (user 입력의 큐 미러), permission-mode (모드 변경 기록)
+// system 라인(turn_duration 등)은 의미가 있어 노출 유지.
 const META_TYPES = new Set([
   "attachment",
   "ai-title",
+  "agent-name",
   "last-prompt",
   "queue-operation",
   "file-history-snapshot",
+  "permission-mode",
 ]);
 
 function parseLog(body: string): ParsedEvent[] {

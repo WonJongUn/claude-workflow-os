@@ -1,7 +1,7 @@
 "use client";
 
-import { memo, useMemo, useRef, useState } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { memo, useEffect, useMemo, useState } from "react";
+import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import { LazyMarkdown } from "./LazyMarkdown";
 import { SessionCodeBlock } from "./SessionCodeBlock";
 import { SessionDiffBlock } from "./SessionDiffBlock";
@@ -42,15 +42,30 @@ export default function SessionTraceView({ events }: { events: ParsedEvent[] }) 
     () => (order === "desc" ? [...numbered].reverse() : numbered),
     [numbered, order],
   );
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const virt = useVirtualizer({
+  // 페이지(window) 스크롤 가상화 — 세션 상세의 sticky 탭 바와 호환되도록.
+  // scrollMargin은 리스트 상단까지의 페이지 오프셋. 마운트/리사이즈 후 측정.
+  const [listEl, setListEl] = useState<HTMLOListElement | null>(null);
+  const [scrollMargin, setScrollMargin] = useState(0);
+  useEffect(() => {
+    if (!listEl) return;
+    const measure = () => setScrollMargin(listEl.offsetTop);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(document.body);
+    window.addEventListener("resize", measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [listEl]);
+  const virt = useWindowVirtualizer({
     count: ordered.length,
-    getScrollElement: () => scrollRef.current,
     // 트레이스의 한 턴은 보통 사용자 프롬프트 + 어시스턴트 텍스트 + 도구 호출 여러 개로 매우 길다.
     // 초기 추정값을 크게 잡아 첫 마운트에 그려지는 턴 수를 최소화한다.
     estimateSize: () => 600,
     overscan: 1,
     measureElement: (el) => el.getBoundingClientRect().height,
+    scrollMargin,
   });
   if (turns.length === 0) {
     return (
@@ -64,27 +79,28 @@ export default function SessionTraceView({ events }: { events: ParsedEvent[] }) 
       <div className="flex justify-end">
         <SortToggle order={order} onChange={setOrder} />
       </div>
-      <div ref={scrollRef} className="scroll-thin max-h-[75vh] overflow-y-auto">
-        <ol
-          className="relative divide-y divide-zinc-100 dark:divide-zinc-900"
-          style={{ height: virt.getTotalSize() }}
-        >
-          {virt.getVirtualItems().map((row) => {
-            const { turn, index } = ordered[row.index];
-            return (
-              <li
-                key={row.key}
-                ref={virt.measureElement}
-                data-index={row.index}
-                className="absolute inset-x-0"
-                style={{ transform: `translateY(${row.start}px)` }}
-              >
-                <TraceTurnView turn={turn} index={index} />
-              </li>
-            );
-          })}
-        </ol>
-      </div>
+      <ol
+        ref={setListEl}
+        className="relative divide-y divide-zinc-100 dark:divide-zinc-900"
+        style={{ height: virt.getTotalSize() }}
+      >
+        {virt.getVirtualItems().map((row) => {
+          const { turn, index } = ordered[row.index];
+          return (
+            <li
+              key={row.key}
+              ref={virt.measureElement}
+              data-index={row.index}
+              className="absolute inset-x-0"
+              style={{
+                transform: `translateY(${row.start - scrollMargin}px)`,
+              }}
+            >
+              <TraceTurnView turn={turn} index={index} />
+            </li>
+          );
+        })}
+      </ol>
     </div>
   );
 }

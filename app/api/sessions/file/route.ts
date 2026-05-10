@@ -50,7 +50,7 @@ async function _GET(request: NextRequest) {
     // ETag = 응답 스키마 버전 + bundle fingerprint(모든 파일 mtime+size).
     // 스키마 버전은 응답 shape이 바뀔 때 bump해 브라우저 HTTP 캐시(304 응답으로 재사용되는 본문)를 무효화한다.
     // 파일 변경 시에는 fingerprint가 바뀌어 자동 무효화.
-    const SCHEMA_VERSION = "v2";
+    const SCHEMA_VERSION = "v4";
     const etag = `"${SCHEMA_VERSION}-${hashString(bundle.fingerprint)}"`;
     const ifNoneMatch = request.headers.get("if-none-match");
     if (ifNoneMatch === etag) {
