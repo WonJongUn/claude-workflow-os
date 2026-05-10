@@ -26,6 +26,8 @@ export type CreateTicketInput = {
   references?: string[];
   /** 자동 워커가 실행할 프로젝트 id. 미지정 시 워커가 픽업하지 않는다. */
   projectId?: string;
+  /** 자동 스케줄링 활성. 미지정 시 서버 기본값 true. false면 OPEN이어도 워커 픽업 보류. */
+  autoSchedule?: boolean;
 };
 
 const api = axios.create({

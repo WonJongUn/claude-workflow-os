@@ -23,6 +23,13 @@ type WorkerState = {
   isStarted: boolean;
   inFlight: Set<string>;
   inFlightChildren: Map<string, { child: ChildProcess; pid: number }>;
+  /**
+   * 현재 ticketEvents에 등록된 핸들러 ref. HMR로 ticket-worker.ts가 reload되면
+   * 새 closure(최신 tryClaim 등을 capture한)로 교체해야 한다 — 옛 closure를 그대로 두면
+   * autoSchedule 같은 신규 가드가 적용 안 되고 옛 코드가 픽업한다.
+   */
+  eventHandler?: (ev: TicketEvent) => void;
+  watchdog?: ReturnType<typeof setInterval>;
 };
 const __G = globalThis as unknown as { __ticketWorkerState?: WorkerState };
 const __state: WorkerState =
@@ -44,14 +51,12 @@ const inFlightChildren = __state.inFlightChildren;
  * 3) watchdog 인터벌 등록.
  */
 export function startTicketWorker(): void {
-  if (__state.isStarted) return;
-  __state.isStarted = true;
+  // HMR로 모듈이 reload되면 isStarted는 true 그대로 — 이전 등록된 핸들러가 옛 closure를
+  // 들고 살아있다. 핸들러는 *항상* 최신 코드로 교체되도록 매 호출 시 off→on.
+  if (__state.eventHandler) ticketEvents.off("event", __state.eventHandler);
+  if (__state.watchdog) clearInterval(__state.watchdog);
 
-  void pickupOpenTickets().catch((err) => {
-    console.error("[ticket-worker] initial pickup failed:", err);
-  });
-
-  ticketEvents.on("event", (ev: TicketEvent) => {
+  const handler = (ev: TicketEvent) => {
     // 새 티켓: 무조건 시도. 상태 변경: OPEN/IN_PROGRESS인데 아직 세션이 없으면 시도.
     // 워커 자신은 spawn 직전 currentSessionId를 set하므로 무한 루프가 발생하지 않는다.
     const candidate =
@@ -64,14 +69,25 @@ export function startTicketWorker(): void {
     void tryClaim(candidate).catch((err) => {
       console.error(`[ticket-worker] claim failed for ${candidate.id}:`, err);
     });
-  });
+  };
+  ticketEvents.on("event", handler);
+  __state.eventHandler = handler;
 
-  setInterval(() => {
+  __state.watchdog = setInterval(() => {
     void checkStuckTickets().catch((err) => {
       console.error("[ticket-worker] watchdog failed:", err);
     });
     reapDeadChildren();
-  }, 60_000).unref();
+  }, 60_000);
+  __state.watchdog.unref();
+
+  // 첫 부팅에만 실행되는 초기 픽업 — HMR reload에서는 inFlight 상태 그대로라 skip.
+  if (!__state.isStarted) {
+    __state.isStarted = true;
+    void pickupOpenTickets().catch((err) => {
+      console.error("[ticket-worker] initial pickup failed:", err);
+    });
+  }
 }
 
 /**
@@ -286,6 +302,9 @@ async function tryClaim(ticket: Ticket): Promise<void> {
     ticket.status === "OPEN" ||
     (ticket.status === "IN_PROGRESS" && !ticket.currentSessionId);
   if (!claimable) return;
+  // autoSchedule이 명시적으로 false면 픽업 보류. 사용자가 PATCH로 true로 바꾸면
+  // ticket.updated 이벤트가 발생하므로 다음 tick에 자연스럽게 픽업된다.
+  if (ticket.autoSchedule === false) return;
   if (inFlight.has(ticket.id)) return;
   if (!ticket.projectId) {
     console.warn(

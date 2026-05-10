@@ -31,6 +31,11 @@ type NewTicketFormProps = {
    * id는 변경 불가 — 폼은 본문만 수정한다.
    */
   editingId?: string;
+  /**
+   * true면 모든 입력을 disabled로 두고 저장 버튼을 숨긴다 — OPEN이 아닌 티켓의 상세 보기.
+   * 사용자는 닫기만 할 수 있다.
+   */
+  readOnly?: boolean;
 };
 
 type FormState = {
@@ -52,6 +57,8 @@ type FormState = {
   references: string[];
   /** 자동 워커가 실행할 프로젝트 id. 빈 문자열이면 미지정 (워커 픽업 안 함). */
   projectId: string;
+  /** 자동 스케줄링 활성. false면 OPEN이어도 워커가 픽업하지 않는다. */
+  autoSchedule: boolean;
 };
 
 const INITIAL: FormState = {
@@ -64,6 +71,7 @@ const INITIAL: FormState = {
   acceptance_criteria: [],
   references: [],
   projectId: "",
+  autoSchedule: true,
 };
 
 /**
@@ -75,6 +83,7 @@ export function NewTicketForm({
   onError,
   initial,
   editingId,
+  readOnly = false,
 }: NewTicketFormProps) {
   const { create, isPending: isCreating } = useCreateTicket();
   const { update: patchTicket, isPending: isUpdating } = useUpdateTicket();
@@ -127,7 +136,11 @@ export function NewTicketForm({
   }
 
   return (
-    <form onSubmit={submit} className="grid grid-cols-1 gap-3 md:grid-cols-2">
+    <form onSubmit={submit}>
+      <fieldset
+        disabled={readOnly}
+        className="m-0 grid grid-cols-1 gap-3 border-0 p-0 md:grid-cols-2"
+      >
       <Field label="제목" required className="md:col-span-2">
         <input
           className={inputBaseClass}
@@ -185,6 +198,22 @@ export function NewTicketForm({
         </select>
       </Field>
 
+      <Field
+        label="자동 스케줄링"
+        hint="활성 시 OPEN 상태에서 자동 워커가 즉시 픽업합니다. 비활성이면 사용자가 활성으로 바꿀 때까지 대기."
+        className="md:col-span-2"
+      >
+        <label className="inline-flex cursor-pointer items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            className="h-4 w-4 rounded border-zinc-300 dark:border-zinc-700"
+            checked={form.autoSchedule}
+            onChange={(e) => updateField("autoSchedule", e.target.checked)}
+          />
+          <span>활성</span>
+        </label>
+      </Field>
+
       <Field label="목표" required className="md:col-span-2">
         <textarea
           className={inputBaseClass}
@@ -237,27 +266,30 @@ export function NewTicketForm({
         />
       </Field>
 
-      <div className="flex justify-end gap-2 md:col-span-2">
+      </fieldset>
+      <div className="mt-3 flex justify-end gap-2">
         <Button type="button" variant="ghost" size="sm" onClick={onClose}>
           <X className="h-3.5 w-3.5" aria-hidden />
-          <span>취소</span>
+          <span>{readOnly ? "닫기" : "취소"}</span>
         </Button>
-        <Button type="submit" size="sm" disabled={isPending}>
-          {isEdit ? (
-            <Save className="h-3.5 w-3.5" aria-hidden />
-          ) : (
-            <FilePlus2 className="h-3.5 w-3.5" aria-hidden />
-          )}
-          <span>
-            {isPending
-              ? isEdit
-                ? "저장 중…"
-                : "생성 중…"
-              : isEdit
-                ? "저장"
-                : "티켓 생성"}
-          </span>
-        </Button>
+        {!readOnly && (
+          <Button type="submit" size="sm" disabled={isPending}>
+            {isEdit ? (
+              <Save className="h-3.5 w-3.5" aria-hidden />
+            ) : (
+              <FilePlus2 className="h-3.5 w-3.5" aria-hidden />
+            )}
+            <span>
+              {isPending
+                ? isEdit
+                  ? "저장 중…"
+                  : "생성 중…"
+                : isEdit
+                  ? "저장"
+                  : "티켓 생성"}
+            </span>
+          </Button>
+        )}
       </div>
     </form>
   );
@@ -277,6 +309,7 @@ function toInput(form: FormState): CreateTicketInput {
     references:
       form.references.length > 0 ? trimList(form.references) : undefined,
     projectId: form.projectId.trim() || undefined,
+    autoSchedule: form.autoSchedule,
   };
 }
 

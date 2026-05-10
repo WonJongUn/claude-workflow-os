@@ -55,6 +55,8 @@ export const TicketDraftSchema = z.object({
   blocked: z.boolean().optional(),
   /** 자동 워커가 실행할 프로젝트 id. 필수 — 없으면 워커가 픽업 못 함. */
   projectId: z.string().min(1, "프로젝트를 선택하세요"),
+  /** 자동 스케줄링 활성 여부. 미지정 시 true. false면 워커가 픽업하지 않는다. */
+  autoSchedule: z.boolean().optional(),
 }) satisfies z.ZodType<TicketDraft>;
 
 /** PATCH `/api/tickets/[id]`의 상태 전이 본문. */
@@ -98,6 +100,8 @@ export const TicketUpdateSchema = z.object({
   blockedReason: z.string().optional(),
   /** 자동 워커가 실행할 프로젝트 id. */
   projectId: z.string().optional(),
+  /** 자동 스케줄링 활성 여부. false → 워커 픽업 보류. true로 바뀌면 다음 tick에 픽업. */
+  autoSchedule: z.boolean().optional(),
   /** 워커 자동화 메타. 워커 스킬이 PATCH로 채운다. null이면 명시적 클리어. */
   currentSessionId: z.string().nullable().optional(),
   /** REVIEW 단계에서 사용자에게 보여줄 질문. null로 보내면 클리어. */

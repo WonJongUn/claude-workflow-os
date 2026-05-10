@@ -35,6 +35,7 @@ function ticketToFormInitial(t: Ticket) {
     acceptance_criteria: t.acceptance_criteria,
     references: t.references ?? [],
     projectId: t.projectId ?? "",
+    autoSchedule: t.autoSchedule ?? true,
   };
 }
 
@@ -202,7 +203,13 @@ export function TicketBoard({
       <Modal
         open={activeTicket !== null}
         onClose={closeEdit}
-        title={activeTicket ? `${activeTicket.id} 편집` : "티켓 편집"}
+        title={
+          activeTicket
+            ? activeTicket.status === "OPEN"
+              ? `${activeTicket.id} 편집`
+              : `${activeTicket.id} 상세 (읽기 전용)`
+            : "티켓 편집"
+        }
         size="lg"
       >
         {editError && (
@@ -221,6 +228,7 @@ export function TicketBoard({
               key={activeTicket.id}
               initial={ticketToFormInitial(activeTicket)}
               editingId={activeTicket.id}
+              readOnly={activeTicket.status !== "OPEN"}
               onClose={closeEdit}
               onError={setEditError}
             />

@@ -184,6 +184,7 @@ export async function createTicket(draft: TicketDraft): Promise<Ticket> {
     blocked: draft.blocked ?? false,
     blockedReason: undefined,
     projectId: draft.projectId,
+    autoSchedule: draft.autoSchedule ?? true,
     created_at: now,
     updated_at: now,
   };

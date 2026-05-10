@@ -75,6 +75,12 @@ export type Ticket = {
   pendingApproval?: boolean;
   /** 워커가 stdout을 append하는 로그 파일의 절대 경로. UI에서 열어볼 수 있게 보존. */
   workerLog?: string;
+  /**
+   * 자동 워커 픽업 활성 여부. 기본 true.
+   * false면 OPEN 상태여도 워커가 픽업하지 않는다 — 사용자가 수동으로 활성화할 때까지 대기.
+   * 다시 true로 PATCH되면 다음 워커 tick에 자연스럽게 픽업된다.
+   */
+  autoSchedule?: boolean;
 };
 
 /**

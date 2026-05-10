@@ -21,6 +21,9 @@ function workerStateLabel(
 ): { label: string; variant: BadgeVariant } | null {
   if (ticket.pendingQuestion) return { label: "질문 대기", variant: "warning" };
   if (ticket.pendingApproval) return { label: "승인 대기", variant: "warning" };
+  if (ticket.autoSchedule === false && ticket.status === "OPEN") {
+    return { label: "스케줄 비활성", variant: "default" };
+  }
   if (ticket.status === "IN_PROGRESS" && ticket.currentSessionId) {
     return { label: "워커 실행", variant: "success" };
   }
@@ -295,6 +298,22 @@ function ReviewControls({
     );
   }
 
+  // Happy path — 워커가 작업을 마치고 승인 대기 중 + 모든 acceptance_criteria 충족.
+  // 사용자가 "그냥 승인하면 되는데 뭘 적어야 하나?" 혼란하지 않도록 승인을 시각 우선으로,
+  // 수정 요청은 토글 뒤로 숨긴다.
+  const allCriteriaDone =
+    ticket.acceptance_criteria.length > 0 &&
+    ticket.acceptance_criteria.every((c) => c.checked);
+  if (ticket.pendingApproval && allCriteriaDone) {
+    return (
+      <ApprovalReadyControls
+        approveLabel={approveLabel}
+        onApprove={handleApprove}
+        onSend={handleSend}
+      />
+    );
+  }
+
   return (
     <div className="mt-3 flex flex-col gap-2 rounded-md border border-amber-200 bg-amber-50 p-2 dark:border-amber-900 dark:bg-amber-950/40">
       <ReviewForm
@@ -303,6 +322,86 @@ function ReviewControls({
         onSend={handleSend}
         onApprove={handleApprove}
       />
+    </div>
+  );
+}
+
+/**
+ * 승인 가능 상태(pendingApproval + 모든 기준 충족) 전용 컨트롤.
+ * 기본 표시는 "승인 가능" 안내 + 큰 승인 버튼만. 수정 요청은 작은 토글로 숨겨두고
+ * 펼쳐야 textarea + 반려 버튼이 나온다 — happy path를 시각 중심으로.
+ */
+function ApprovalReadyControls({
+  approveLabel,
+  onApprove,
+  onSend,
+}: {
+  /** 승인 버튼 라벨 — 보통 "DONE으로 승인". */
+  approveLabel: string;
+  /** 승인 클릭. */
+  onApprove: () => void;
+  /** 반려 본문 전송. "[반려] " prefix는 호출자가 붙인다. */
+  onSend: (payload: string) => void;
+}) {
+  const [showReject, setShowReject] = useState(false);
+  const [text, setText] = useState("");
+  const trimmed = text.trim();
+
+  const submitReject = () => {
+    if (!trimmed) return;
+    onSend(`[반려] ${trimmed}`);
+    setText("");
+    setShowReject(false);
+  };
+
+  return (
+    <div className="mt-3 flex flex-col gap-2 rounded-md border border-emerald-200 bg-emerald-50 p-2 dark:border-emerald-900 dark:bg-emerald-950/30">
+      <div className="flex items-center justify-between gap-2 text-xs text-emerald-800 dark:text-emerald-200">
+        <span className="font-medium">✓ 모든 검토 항목 충족 — 승인 가능</span>
+        <Button size="sm" variant="primary" onClick={onApprove}>
+          {approveLabel}
+        </Button>
+      </div>
+      {showReject ? (
+        <div className="flex flex-col gap-2">
+          <textarea
+            className={inputBaseClass}
+            rows={3}
+            placeholder="수정 요청 내용을 입력하면 같은 세션에서 워커가 이어서 작업합니다"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            autoFocus
+          />
+          <div className="flex justify-end gap-1">
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setShowReject(false);
+                setText("");
+              }}
+            >
+              취소
+            </Button>
+            <Button
+              size="sm"
+              variant="danger"
+              disabled={!trimmed}
+              onClick={submitReject}
+            >
+              반려 (수정 요청)
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setShowReject(true)}
+          className="self-end text-[11px] text-emerald-700 underline-offset-2 hover:underline dark:text-emerald-300"
+        >
+          수정 요청이 있나요?
+        </button>
+      )}
     </div>
   );
 }
