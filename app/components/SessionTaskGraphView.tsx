@@ -33,7 +33,7 @@ export default function SessionTaskGraphView({
     refetchOnWindowFocus: true,
     staleTime: 0,
   });
-  const events = data?.events ?? [];
+  const events = useMemo(() => data?.events ?? [], [data?.events]);
   const layout = useMemo(() => buildLayout(events), [events]);
   const [selected, setSelected] = useState<NodeRef | null>(null);
 
@@ -163,8 +163,35 @@ function buildLayout(events: SessionTaskEvent[]): Layout | null {
       events: evs,
     });
   }
-  lanes.sort((a, b) => a.events[0].ts - b.events[0].ts);
+  // 같은 슬롯의 재할당(예: 1, 1.2, 1.3)이 그래프에서 인접하게 보이도록 (slot, reuse) 사전식 정렬.
+  // 슬롯 자체의 등장 순서는 그 슬롯의 *대표(첫)* lane 첫 이벤트 ts 로 결정 — 시간순 직관 유지.
+  const slotFirstTs = new Map<number, number>();
+  for (const lane of lanes) {
+    const slot = parseSlot(lane.taskId).slot;
+    const t = lane.events[0].ts;
+    const cur = slotFirstTs.get(slot);
+    if (cur === undefined || t < cur) slotFirstTs.set(slot, t);
+  }
+  lanes.sort((a, b) => {
+    const A = parseSlot(a.taskId);
+    const B = parseSlot(b.taskId);
+    const tA = slotFirstTs.get(A.slot) ?? a.events[0].ts;
+    const tB = slotFirstTs.get(B.slot) ?? b.events[0].ts;
+    if (tA !== tB) return tA - tB;
+    if (A.slot !== B.slot) return A.slot - B.slot;
+    return A.reuse - B.reuse;
+  });
   return { minMs, maxMs, lanes };
+}
+
+/**
+ * TodoWrite 합성 id 를 (slot, reuse) 로 분해. "1" → (1,1), "1.2" → (1,2).
+ * 슬롯/재할당 형식이 아니면(=TaskCreate 의 harness 전역 id) reuse=1 로 취급해 분리되지 않게 한다.
+ */
+function parseSlot(taskId: string): { slot: number; reuse: number } {
+  const m = /^(\d+)(?:\.(\d+))?$/.exec(taskId);
+  if (!m) return { slot: Number.MAX_SAFE_INTEGER, reuse: 1 };
+  return { slot: Number(m[1]), reuse: m[2] ? Number(m[2]) : 1 };
 }
 
 function laneLabel(taskId: string, snap: SessionTask): string {
@@ -369,9 +396,19 @@ function Lane({
         className={cn(
           LANE_LABEL,
           "shrink-0 truncate px-3 py-2 text-[11px] text-zinc-700 dark:text-zinc-300",
+          // reuse>1 lane 은 같은 슬롯의 파생 task — 부모 lane 아래로 시각적으로 들여쓰기.
+          parseSlot(lane.taskId).reuse > 1 && "pl-6",
         )}
         title={lane.label}
       >
+        {parseSlot(lane.taskId).reuse > 1 && (
+          <span
+            className="mr-1 text-zinc-400"
+            aria-label="같은 슬롯의 재할당"
+          >
+            ↳
+          </span>
+        )}
         <span className="font-mono text-zinc-400">#{lane.taskId}</span>{" "}
         <span className="text-zinc-800 dark:text-zinc-200">
           {lane.label.replace(/^#\S+\s*/, "")}
