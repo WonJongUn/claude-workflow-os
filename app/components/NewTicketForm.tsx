@@ -1,18 +1,19 @@
 "use client";
 
 import { useState } from "react";
-import { FilePlus2, X } from "lucide-react";
-import type { TicketPriority } from "@/lib/types";
+import { FilePlus2, Save, X } from "lucide-react";
+import type { AcceptanceCriterion, TicketPriority } from "@/lib/types";
 import {
   Button,
   Field,
   StringListInput,
   inputBaseClass,
 } from "./ui";
+import { AcceptanceCriteriaInput } from "./AcceptanceCriteriaInput";
 import { AgentSelect } from "./AgentSelect";
 import { ReferencesInput } from "./ReferencesInput";
 import type { CreateTicketInput } from "./ticket-client";
-import { useCreateTicket } from "./use-tickets";
+import { useCreateTicket, useUpdateTicket } from "./use-tickets";
 import { useProjects } from "./use-projects";
 
 type NewTicketFormProps = {
@@ -20,6 +21,16 @@ type NewTicketFormProps = {
   onClose: () => void;
   /** 폼 레벨 에러 메시지 표시. */
   onError: (msg: string | null) => void;
+  /**
+   * 폼 초기값 override. 복제·편집에서 기존 티켓 내용을 채워 열 때 사용.
+   * 미지정 필드는 빈/기본값. 마운트 후엔 사용자가 자유롭게 수정.
+   */
+  initial?: Partial<FormState>;
+  /**
+   * 지정 시 PATCH(편집 모드), 미지정이면 POST(생성 모드).
+   * id는 변경 불가 — 폼은 본문만 수정한다.
+   */
+  editingId?: string;
 };
 
 type FormState = {
@@ -35,10 +46,12 @@ type FormState = {
   priority: TicketPriority;
   /** 요구사항. */
   requirements: string[];
-  /** 완료 기준. */
-  acceptance_criteria: string[];
+  /** 완료 기준. text + checked 구조. 모두 checked일 때만 DONE 전이 가능. */
+  acceptance_criteria: AcceptanceCriterion[];
   /** 참조 파일/URL. */
   references: string[];
+  /** 자동 워커가 실행할 프로젝트 id. 빈 문자열이면 미지정 (워커 픽업 안 함). */
+  projectId: string;
 };
 
 const INITIAL: FormState = {
@@ -50,18 +63,35 @@ const INITIAL: FormState = {
   requirements: [],
   acceptance_criteria: [],
   references: [],
+  projectId: "",
 };
 
 /**
  * 새 티켓 생성 폼. 활성 프로젝트의 에이전트 목록을 함께 가져와 select에 채운다.
  * 성공 시 onClose 호출, 실패 시 onError로 메시지 전달 (모달에서 표시).
  */
-export function NewTicketForm({ onClose, onError }: NewTicketFormProps) {
-  const [form, setForm] = useState<FormState>(INITIAL);
-  const { create, isPending } = useCreateTicket();
-  const { activeId } = useProjects();
+export function NewTicketForm({
+  onClose,
+  onError,
+  initial,
+  editingId,
+}: NewTicketFormProps) {
+  const { create, isPending: isCreating } = useCreateTicket();
+  const { update: patchTicket, isPending: isUpdating } = useUpdateTicket();
+  const { activeId, projects } = useProjects();
+  // 폼 첫 마운트 때 활성 프로젝트 탭이 사용자 프로젝트면 기본값으로 — 한 번 클릭 줄임.
+  // 명시적 prefill(`initial.projectId`)이 있으면 그것이 우선.
+  const [form, setForm] = useState<FormState>(() => ({
+    ...INITIAL,
+    projectId: activeId !== "ALL" ? activeId : "",
+    ...initial,
+  }));
+  const isEdit = Boolean(editingId);
+  const isPending = isCreating || isUpdating;
+  // 자동 워커 픽업 대상은 사용자 프로젝트만 — 글로벌 ALL 탭은 제외.
+  const workerProjects = projects.filter((p) => p.id !== "ALL");
 
-  function update<K extends keyof FormState>(key: K, value: FormState[K]) {
+  function updateField<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((s) => ({ ...s, [key]: value }));
   }
 
@@ -71,7 +101,22 @@ export function NewTicketForm({ onClose, onError }: NewTicketFormProps) {
       onError("제목과 목표는 필수입니다.");
       return;
     }
-    create(toInput(form), {
+    if (!form.projectId) {
+      onError("프로젝트를 선택하세요.");
+      return;
+    }
+    const payload = toInput(form);
+    if (isEdit && editingId) {
+      patchTicket(editingId, payload, {
+        onSuccess: () => {
+          onError(null);
+          onClose();
+        },
+        onError,
+      });
+      return;
+    }
+    create(payload, {
       onSuccess: () => {
         onError(null);
         setForm(INITIAL);
@@ -88,7 +133,7 @@ export function NewTicketForm({ onClose, onError }: NewTicketFormProps) {
           className={inputBaseClass}
           placeholder="POST /users 엔드포인트 구현"
           value={form.title}
-          onChange={(e) => update("title", e.target.value)}
+          onChange={(e) => updateField("title", e.target.value)}
           autoFocus
         />
       </Field>
@@ -96,7 +141,7 @@ export function NewTicketForm({ onClose, onError }: NewTicketFormProps) {
       <Field label="담당 에이전트" hint="프로젝트 또는 글로벌 에이전트">
         <AgentSelect
           value={form.agent}
-          onChange={(v) => update("agent", v)}
+          onChange={(v) => updateField("agent", v)}
           projectId={activeId}
         />
       </Field>
@@ -105,11 +150,38 @@ export function NewTicketForm({ onClose, onError }: NewTicketFormProps) {
         <select
           className={inputBaseClass}
           value={form.priority}
-          onChange={(e) => update("priority", e.target.value as TicketPriority)}
+          onChange={(e) => updateField("priority", e.target.value as TicketPriority)}
         >
           <option value="low">낮음</option>
           <option value="medium">보통</option>
           <option value="high">높음</option>
+        </select>
+      </Field>
+
+      <Field
+        label="실행 프로젝트"
+        required
+        hint={
+          workerProjects.length === 0
+            ? "등록된 프로젝트가 없습니다. 설정에서 프로젝트를 먼저 추가하세요."
+            : "선택한 프로젝트에서 자동 워커가 세션을 띄웁니다."
+        }
+        className="md:col-span-2"
+      >
+        <select
+          className={inputBaseClass}
+          value={form.projectId}
+          onChange={(e) => updateField("projectId", e.target.value)}
+          disabled={workerProjects.length === 0}
+        >
+          <option value="" disabled>
+            프로젝트 선택…
+          </option>
+          {workerProjects.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
         </select>
       </Field>
 
@@ -119,7 +191,7 @@ export function NewTicketForm({ onClose, onError }: NewTicketFormProps) {
           rows={3}
           placeholder="신규 사용자 생성 API를 구현한다."
           value={form.goal}
-          onChange={(e) => update("goal", e.target.value)}
+          onChange={(e) => updateField("goal", e.target.value)}
         />
       </Field>
 
@@ -129,22 +201,26 @@ export function NewTicketForm({ onClose, onError }: NewTicketFormProps) {
           rows={2}
           placeholder="현재 GET /users만 있고 생성 기능이 없어 …"
           value={form.background}
-          onChange={(e) => update("background", e.target.value)}
+          onChange={(e) => updateField("background", e.target.value)}
         />
       </Field>
 
       <Field label="요구사항" className="md:col-span-2">
         <StringListInput
           value={form.requirements}
-          onChange={(v) => update("requirements", v)}
+          onChange={(v) => updateField("requirements", v)}
           placeholder="요구사항을 입력하고 Enter"
         />
       </Field>
 
-      <Field label="완료 기준" className="md:col-span-2">
-        <StringListInput
+      <Field
+        label="완료 기준"
+        hint="모든 항목이 체크되어야 DONE으로 전이 가능 — 워커도 PATCH로 체크할 수 있습니다."
+        className="md:col-span-2"
+      >
+        <AcceptanceCriteriaInput
           value={form.acceptance_criteria}
-          onChange={(v) => update("acceptance_criteria", v)}
+          onChange={(v) => updateField("acceptance_criteria", v)}
           placeholder="완료 기준을 입력하고 Enter"
         />
       </Field>
@@ -156,7 +232,7 @@ export function NewTicketForm({ onClose, onError }: NewTicketFormProps) {
       >
         <ReferencesInput
           value={form.references}
-          onChange={(v) => update("references", v)}
+          onChange={(v) => updateField("references", v)}
           projectId={activeId}
         />
       </Field>
@@ -167,8 +243,20 @@ export function NewTicketForm({ onClose, onError }: NewTicketFormProps) {
           <span>취소</span>
         </Button>
         <Button type="submit" size="sm" disabled={isPending}>
-          <FilePlus2 className="h-3.5 w-3.5" aria-hidden />
-          <span>{isPending ? "생성 중…" : "티켓 생성"}</span>
+          {isEdit ? (
+            <Save className="h-3.5 w-3.5" aria-hidden />
+          ) : (
+            <FilePlus2 className="h-3.5 w-3.5" aria-hidden />
+          )}
+          <span>
+            {isPending
+              ? isEdit
+                ? "저장 중…"
+                : "생성 중…"
+              : isEdit
+                ? "저장"
+                : "티켓 생성"}
+          </span>
         </Button>
       </div>
     </form>
@@ -183,9 +271,12 @@ function toInput(form: FormState): CreateTicketInput {
     agent: form.agent.trim() || undefined,
     background: form.background.trim() || undefined,
     requirements: trimList(form.requirements),
-    acceptance_criteria: trimList(form.acceptance_criteria),
+    acceptance_criteria: form.acceptance_criteria
+      .map((c) => ({ text: c.text.trim(), checked: c.checked }))
+      .filter((c) => c.text.length > 0),
     references:
       form.references.length > 0 ? trimList(form.references) : undefined,
+    projectId: form.projectId.trim() || undefined,
   };
 }
 

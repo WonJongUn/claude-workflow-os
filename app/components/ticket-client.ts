@@ -1,5 +1,10 @@
 import axios from "axios";
-import type { Ticket, TicketPriority, TicketStatus } from "@/lib/types";
+import type {
+  AcceptanceCriterion,
+  Ticket,
+  TicketPriority,
+  TicketStatus,
+} from "@/lib/types";
 
 /** NewTicketForm이 만들어 createTicket으로 보내는 페이로드. 서버 TicketDraft의 클라 측 표현. */
 export type CreateTicketInput = {
@@ -15,10 +20,12 @@ export type CreateTicketInput = {
   background?: string;
   /** 충족해야 할 요구사항 항목들. */
   requirements?: string[];
-  /** 완료 판정 기준. */
-  acceptance_criteria?: string[];
+  /** 완료 판정 기준. 모두 checked일 때만 DONE 전이 가능. */
+  acceptance_criteria?: AcceptanceCriterion[];
   /** 관련 파일/링크. */
   references?: string[];
+  /** 자동 워커가 실행할 프로젝트 id. 미지정 시 워커가 픽업하지 않는다. */
+  projectId?: string;
 };
 
 const api = axios.create({
@@ -71,6 +78,48 @@ export async function createTicket(input: CreateTicketInput): Promise<Ticket> {
     ...input,
   });
   return data;
+}
+
+/** 티켓 부분 갱신. TicketUpdateSchema 필드만 받는다. */
+export async function updateTicket(
+  id: string,
+  patch: Partial<CreateTicketInput>,
+): Promise<Ticket> {
+  const { data } = await api.patch<Ticket>(`/tickets/${id}`, patch);
+  return data;
+}
+
+/** 티켓 영구 삭제. 서버는 204 + SSE `ticket.deleted` 이벤트 emit. */
+export async function deleteTicket(id: string): Promise<void> {
+  await api.delete(`/tickets/${id}`);
+}
+
+/** 워커 로그 tail 응답. workerLog 파일 미존재 시 exists=false, content="". */
+export type WorkerLogTail = {
+  /** 마지막 N바이트 텍스트. 잘린 경우 첫 줄은 제거됨. */
+  content: string;
+  /** 파일이 디스크에 있는지 여부 — 워커가 한 번도 안 돌면 false. */
+  exists: boolean;
+  /** N바이트 한도로 잘렸는지 여부. */
+  truncated: boolean;
+  /** 전체 파일 크기 (bytes). */
+  size?: number;
+  /** 마지막 수정 시각 (epoch ms). */
+  mtimeMs?: number;
+};
+
+/** 티켓의 워커 로그 마지막 32KB tail. UI 폴링용. */
+export async function fetchWorkerLog(id: string): Promise<WorkerLogTail> {
+  const { data } = await api.get<WorkerLogTail>(`/tickets/${id}/worker-log`);
+  return data;
+}
+
+/**
+ * REVIEW 상태에서 사용자가 입력한 답변을 워커에게 전달한다.
+ * 서버가 pendingQuestion을 클리어하고 IN_PROGRESS로 되돌리거나, 별도 큐에 적재한다(백엔드 결정).
+ */
+export async function answerTicket(id: string, answer: string): Promise<void> {
+  await api.post(`/tickets/${id}/answer`, { answer });
 }
 
 /**
