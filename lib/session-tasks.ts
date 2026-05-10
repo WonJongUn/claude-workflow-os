@@ -58,6 +58,9 @@ export async function replaySessionTaskTimeline(
   const byId = new Map<string, SessionTask>();
   const events: SessionTaskEvent[] = [];
   let lastTodoWrite: SessionTask[] | null = null;
+  // TodoWrite 슬롯별 재할당 횟수. subject 가 바뀌면 같은 슬롯이라도 새 logical task 로 취급해
+  // id 를 분기한다 (1 → 1.2 → 1.3 ...). 그래프에서 한 노드 안에 여러 작업이 섞이는 걸 방지.
+  const slotReuse = new Map<number, number>();
 
   // 본문은 메인 + 서브에이전트 jsonl을 file 순서로 concat한 결과 — 시간순이 아니다(E6).
   // 상태 머신을 정확히 굴리려면 ts 기준 정렬이 필수. 정렬 안 하면 sidechain의 빠른 ts 업데이트가
@@ -167,47 +170,52 @@ export async function replaySessionTaskTimeline(
       } else if (name === "TodoWrite") {
         const todos = input?.todos;
         if (!Array.isArray(todos)) return;
-        const next: SessionTask[] = todos.map((it, idx): SessionTask => {
-          const item = it as {
+        // 직전 스냅샷과 인덱스 기준 diff → 그래프용 create/update 이벤트 합성.
+        // TodoWrite는 *전체 list 스냅샷* 도구라 자체 이벤트가 없음 → diff로 사후 추출.
+        // 슬롯의 subject 가 바뀌면 같은 슬롯에 *새 logical task* 가 들어온 것으로 보고
+        // 이전 task 를 deleted 로 닫고 새 id 를 발급한다 (id 형식: "i" → "i.2" → "i.3").
+        const prev = lastTodoWrite ?? [];
+        const next: SessionTask[] = [];
+        for (let i = 0; i < todos.length; i += 1) {
+          const item = todos[i] as {
             content?: string;
             status?: SessionTask["status"];
             activeForm?: string;
           };
-          return {
-            id: String(idx + 1),
-            subject: item.content ?? "(untitled)",
-            activeForm: item.activeForm,
-            status: item.status ?? "pending",
-          };
-        });
-        // 직전 스냅샷과 인덱스 기준 diff → 그래프용 create/update 이벤트 합성.
-        // TodoWrite는 *전체 list 스냅샷* 도구라 자체 이벤트가 없음 → diff로 사후 추출.
-        const prev = lastTodoWrite ?? [];
-        for (let i = 0; i < next.length; i += 1) {
-          const cur = next[i];
+          const subject = item.content ?? "(untitled)";
+          const status = item.status ?? "pending";
+          const activeForm = item.activeForm;
           const old = prev[i];
-          if (!old) {
-            events.push({
-              ts,
-              kind: "create",
-              taskId: cur.id,
-              snapshot: { ...cur },
-            });
+          const sameLogical = old !== undefined && old.subject === subject;
+          let id: string;
+          if (sameLogical) {
+            id = old.id;
+          } else {
+            if (old) {
+              events.push({
+                ts,
+                kind: "update",
+                taskId: old.id,
+                snapshot: { ...old, status: "deleted" },
+              });
+            }
+            const reuse = (slotReuse.get(i) ?? 0) + 1;
+            slotReuse.set(i, reuse);
+            id = reuse === 1 ? String(i + 1) : `${i + 1}.${reuse}`;
+          }
+          const cur: SessionTask = { id, subject, activeForm, status };
+          next.push(cur);
+          if (!sameLogical) {
+            events.push({ ts, kind: "create", taskId: id, snapshot: { ...cur } });
           } else if (
-            old.status !== cur.status ||
-            old.subject !== cur.subject ||
-            old.activeForm !== cur.activeForm
+            old.status !== status ||
+            old.activeForm !== activeForm
           ) {
-            events.push({
-              ts,
-              kind: "update",
-              taskId: cur.id,
-              snapshot: { ...cur },
-            });
+            events.push({ ts, kind: "update", taskId: id, snapshot: { ...cur } });
           }
         }
         // 줄어든 항목은 deleted로 표시 (드물지만 가능).
-        for (let i = next.length; i < prev.length; i += 1) {
+        for (let i = todos.length; i < prev.length; i += 1) {
           const removed = prev[i];
           events.push({
             ts,
@@ -228,7 +236,14 @@ export async function replaySessionTaskTimeline(
     events.push({ ts, kind: "create", taskId: task.id, snapshot: { ...task } });
   }
 
-  const finalTasks = created.length > 0 ? created : (lastTodoWrite ?? []);
+  // events 를 taskId 별 최종 스냅샷으로 fold → "현재 상황" view 가 deleted/completed 까지
+  // 모두 보게 한다. lastTodoWrite 만 쓰면 TodoWrite 가 잘라낸 항목이 history 에서 사라짐 (E12).
+  const finalById = new Map<string, SessionTask>();
+  for (const ev of events) finalById.set(ev.taskId, ev.snapshot);
+  const finalTasks =
+    finalById.size > 0
+      ? Array.from(finalById.values()).sort(byNumericId)
+      : created;
   const result = { events, finalTasks };
   replayCache.set(jsonlPath, { fingerprint: bundle.fingerprint, result });
   return result;

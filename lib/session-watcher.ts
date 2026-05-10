@@ -429,16 +429,18 @@ async function readNew(filePath: string): Promise<void> {
           if (!content) continue;
           next.set(content, status);
         }
+        // TodoWrite는 stable id가 없어 content를 그대로 url의 taskId로 쓰면 길고 못생기다.
+        // 알림은 subject(=content)로 본문 표시만 하고, href용 taskId는 비워둔다 — 클릭은
+        // /sessions/[id]?tab=tasks 까지만 라우팅(특정 카드 highlight는 포기).
         const prev = todoSnapshotBySession.get(sessionId) ?? new Map();
         for (const [content, status] of next) {
           const prevStatus = prev.get(content);
           if (prevStatus === undefined) {
-            // 새 항목 — content를 taskId 자리에 넣어 알림에 제목으로 표시.
             sessionTaskEvents.emit("event", {
               kind: "create",
               sessionId,
               filePath,
-              taskId: content,
+              taskId: "",
               status: validTaskStatus(status),
               subject: content,
               ts,
@@ -448,7 +450,7 @@ async function readNew(filePath: string): Promise<void> {
               kind: "update",
               sessionId,
               filePath,
-              taskId: content,
+              taskId: "",
               status: validTaskStatus(status),
               subject: content,
               ts,
@@ -461,7 +463,7 @@ async function readNew(filePath: string): Promise<void> {
               kind: "update",
               sessionId,
               filePath,
-              taskId: content,
+              taskId: "",
               status: "deleted",
               subject: content,
               ts,
