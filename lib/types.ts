@@ -12,6 +12,17 @@ export type TicketStatus =
 /** 티켓 우선순위. 보드 정렬과 알림 임계값에 사용. */
 export type TicketPriority = "low" | "medium" | "high";
 
+/**
+ * 완료 판정 기준 한 항목. 사용자/워커 양쪽이 체크할 수 있다.
+ * 모든 항목이 checked=true여야 REVIEW → DONE 전이가 허용된다 (서버 강제).
+ */
+export type AcceptanceCriterion = {
+  /** 사람이 읽을 기준 문장. 1~280자 권장. */
+  text: string;
+  /** 충족 여부. 워커는 작업 완료 후 PATCH로 true 설정, 사용자는 카드 UI로 토글. */
+  checked: boolean;
+};
+
 /** 영속화된 티켓 한 건. tickets/<id>.json의 최상위 객체. */
 export type Ticket = {
   /** ULID 또는 사용자 지정 슬러그. 파일명과 일치. */
@@ -26,8 +37,8 @@ export type Ticket = {
   background?: string;
   /** 작업이 만족해야 하는 요구사항 목록. 순서 의미 없음. */
   requirements: string[];
-  /** 완료 판정 기준. 모두 충족해야 REVIEW로 보낼 수 있다는 약속(소프트). */
-  acceptance_criteria: string[];
+  /** 완료 판정 기준. 모두 checked=true여야 DONE으로 전이 가능. */
+  acceptance_criteria: AcceptanceCriterion[];
   /** 참고 링크/파일 경로(선택). UI에서 클릭 가능하게 렌더. */
   references?: string[];
   /** 보드 정렬과 알림 임계값에 사용. */
@@ -42,6 +53,28 @@ export type Ticket = {
   created_at: string;
   /** ISO 8601 마지막 수정 시각. 변경 시 자동 갱신. */
   updated_at: string;
+  /**
+   * 자동 워커가 실행할 프로젝트 id. project-store의 Project.id와 매칭.
+   * 신규 생성 시 필수 — 없으면 zod 400으로 거절. 레거시 데이터에 한해 일시적으로 미지정될 수 있다.
+   */
+  projectId?: string;
+  /**
+   * 워커가 spawn한 활성 Claude Code 세션 id (UUID). resume에 사용.
+   * 세션이 끝나도 회수하지 않는다 — 마지막 사용된 세션의 흔적으로 남는다.
+   */
+  currentSessionId?: string;
+  /**
+   * REVIEW 상태에서 사용자에게 보여줄 질문 텍스트. 스킬이 사용자 입력이 필요할 때 채운다.
+   * 사용자 답변 후 IN_PROGRESS로 돌아가면서 null로 클리어.
+   */
+  pendingQuestion?: string;
+  /**
+   * 작업 완료 후 사용자 승인을 기다리는 표시. true면 보드 카드에서
+   * "DONE으로 승인" 버튼을 노출한다. REVIEW 상태에서만 의미 있음.
+   */
+  pendingApproval?: boolean;
+  /** 워커가 stdout을 append하는 로그 파일의 절대 경로. UI에서 열어볼 수 있게 보존. */
+  workerLog?: string;
 };
 
 /**
@@ -50,7 +83,15 @@ export type Ticket = {
  */
 export type TicketDraft = Omit<
   Ticket,
-  "id" | "status" | "blocked" | "created_at" | "updated_at"
+  | "id"
+  | "status"
+  | "blocked"
+  | "created_at"
+  | "updated_at"
+  | "currentSessionId"
+  | "pendingQuestion"
+  | "pendingApproval"
+  | "workerLog"
 > & {
   /** 명시적으로 id를 고정하고 싶을 때만. 미지정 시 서버가 생성. */
   id?: string;

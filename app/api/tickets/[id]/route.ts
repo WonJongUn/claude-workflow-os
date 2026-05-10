@@ -18,6 +18,7 @@ export const dynamic = "force-dynamic";
 
 function errorStatus(message: string): number {
   if (message.startsWith("Illegal transition")) return 409;
+  if (message.startsWith("Acceptance criteria not satisfied")) return 409;
   if (message.startsWith("Ticket not found")) return 404;
   return 400;
 }

@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { ticketsDir } from "./paths";
 import type {
+  AcceptanceCriterion,
   Ticket,
   TicketDraft,
   TicketEvent,
@@ -14,8 +15,17 @@ import { notifySubscribers } from "./web-push";
  * 인-프로세스 티켓 이벤트 버스. SSE 라우트(`app/api/sse/route.ts`)가
  * 유일한 구독자다. store와 SSE 사이의 단일 시임 — 다른 모듈은 이 emitter에
  * 직접 emit하지 않는다 (push는 store가 처리). 이벤트 페이로드는 `TicketEvent`.
+ *
+ * globalThis 에 hoist하는 이유: Next dev HMR이 `lib/ticket-store.ts` 를 두 컨텍스트
+ * (instrumentation 부팅 vs route 핸들러 번들)에서 따로 evaluate하면 module-scope
+ * `new EventEmitter()` 가 *각각* 만들어져 emit/listen 인스턴스가 어긋난다 — 워커가
+ * `ticket.created` 를 못 받아 자동 spawn이 안 되는 증상이 났다. globalThis 캐시는
+ * HMR/duplicate evaluation을 가로지르며 동일 객체를 보장한다.
  */
-export const ticketEvents = new EventEmitter();
+const G = globalThis as unknown as { __ticketEvents?: EventEmitter };
+export const ticketEvents: EventEmitter = G.__ticketEvents ?? new EventEmitter();
+ticketEvents.setMaxListeners(50);
+if (!G.__ticketEvents) G.__ticketEvents = ticketEvents;
 
 const ALLOWED_TRANSITIONS: Record<TicketStatus, readonly TicketStatus[]> = {
   OPEN: ["IN_PROGRESS", "CANCELLED"],
@@ -64,10 +74,39 @@ async function readAllFilenames(): Promise<string[]> {
 async function readTicketFile(file: string): Promise<Ticket | null> {
   try {
     const body = await fs.readFile(path.join(ticketsDir(), file), "utf8");
-    return JSON.parse(body) as Ticket;
+    const raw = JSON.parse(body) as Ticket & {
+      acceptance_criteria?: unknown;
+    };
+    return normalizeTicket(raw);
   } catch {
     return null;
   }
+}
+
+/**
+ * 디스크 → 도메인 형태 정규화. 레거시 `acceptance_criteria: string[]`을
+ * `{text, checked:false}[]`로 변환. 신규 파일은 그대로 통과.
+ */
+function normalizeTicket(raw: Ticket & { acceptance_criteria?: unknown }): Ticket {
+  const ac = normalizeAcceptanceCriteria(raw.acceptance_criteria);
+  return { ...raw, acceptance_criteria: ac };
+}
+
+function normalizeAcceptanceCriteria(raw: unknown): AcceptanceCriterion[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item) => {
+    if (typeof item === "string") {
+      const text = item.trim();
+      return text ? [{ text, checked: false }] : [];
+    }
+    if (item && typeof item === "object" && "text" in item) {
+      const obj = item as { text?: unknown; checked?: unknown };
+      const text = typeof obj.text === "string" ? obj.text.trim() : "";
+      if (!text) return [];
+      return [{ text, checked: obj.checked === true }];
+    }
+    return [];
+  });
 }
 
 async function writeTicket(ticket: Ticket): Promise<void> {
@@ -137,12 +176,14 @@ export async function createTicket(draft: TicketDraft): Promise<Ticket> {
     goal: draft.goal,
     background: draft.background,
     requirements: draft.requirements ?? [],
-    acceptance_criteria: draft.acceptance_criteria ?? [],
+    // draft가 zod를 안 거친 내부 호출이거나 옛 형태일 수도 있어 한 번 더 정규화.
+    acceptance_criteria: normalizeAcceptanceCriteria(draft.acceptance_criteria),
     references: draft.references,
     priority: draft.priority,
     status: draft.status ?? "OPEN",
     blocked: draft.blocked ?? false,
     blockedReason: undefined,
+    projectId: draft.projectId,
     created_at: now,
     updated_at: now,
   };
@@ -151,12 +192,14 @@ export async function createTicket(draft: TicketDraft): Promise<Ticket> {
   return ticket;
 }
 
-type TicketPatch = Partial<
+type Nullable<T> = { [K in keyof T]?: T[K] | null };
+type TicketPatch = Nullable<
   Omit<Ticket, "id" | "created_at" | "updated_at" | "status">
 >;
 
 /**
  * 티켓 일반 필드 갱신. id/생성시각/상태는 patch가 있어도 무시(상태 전이는 `transitionTicket` 전용).
+ * 패치 값이 `null`이면 해당 필드를 `undefined`로 클리어한다 (스킬이 명시적 클리어 시 사용).
  * `ticket.updated` 이벤트 emit.
  */
 export async function updateTicket(
@@ -164,9 +207,13 @@ export async function updateTicket(
   patch: TicketPatch,
 ): Promise<Ticket> {
   const previous = await loadOrThrow(id);
+  const normalized: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(patch)) {
+    normalized[k] = v === null ? undefined : v;
+  }
   const next: Ticket = {
     ...previous,
-    ...patch,
+    ...(normalized as Partial<Ticket>),
     id: previous.id,
     status: previous.status,
     created_at: previous.created_at,
@@ -199,12 +246,25 @@ export async function transitionTicket(
 ): Promise<Ticket> {
   const previous = await loadOrThrow(id);
   assertTransition(previous.status, next);
+  // DONE 전이는 모든 acceptance_criteria가 체크된 경우에만. 빈 배열은 통과(레거시 호환).
+  if (next === "DONE" && previous.acceptance_criteria.length > 0) {
+    const unchecked = previous.acceptance_criteria.filter((c) => !c.checked);
+    if (unchecked.length > 0) {
+      throw new Error(
+        `Acceptance criteria not satisfied: ${unchecked.length}개 미체크 항목이 있습니다`,
+      );
+    }
+  }
   const stayingInProgress = next === "IN_PROGRESS";
+  const terminal = next === "DONE" || next === "CANCELLED";
   const updated: Ticket = {
     ...previous,
     status: next,
     blocked: stayingInProgress ? previous.blocked : false,
     blockedReason: stayingInProgress ? previous.blockedReason : undefined,
+    // 종결 상태에선 사용자 입력 대기 플래그가 의미 없음 → 자동 클리어.
+    pendingApproval: terminal ? false : previous.pendingApproval,
+    pendingQuestion: terminal ? undefined : previous.pendingQuestion,
     updated_at: nowIso(),
   };
   await writeTicket(updated);

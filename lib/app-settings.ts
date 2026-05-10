@@ -30,6 +30,16 @@ export type AppSettings = {
   useTmux?: boolean;
   /** Claude Code 실행 시 사용할 권한 모드. 기본은 default. */
   permissionMode?: PermissionMode;
+  /**
+   * 자동 티켓 워커가 동시에 실행할 수 있는 최대 세션 수. 1~5 권장.
+   * 기본 1 — 한 번에 한 티켓씩 직렬 처리.
+   */
+  maxConcurrentTickets?: number;
+  /**
+   * IN_PROGRESS인 티켓이 N분 이상 갱신 없으면 자동으로 REVIEW(pendingApproval=true)로 회수.
+   * 기본 30분. 0 또는 음수면 watchdog 비활성.
+   */
+  ticketWatchdogMinutes?: number;
 };
 
 const SETTINGS_PATH = path.resolve(
@@ -44,6 +54,8 @@ export const DEFAULT_SETTINGS: Required<AppSettings> = {
   defaultPrompt: "",
   useTmux: false,
   permissionMode: "default",
+  maxConcurrentTickets: 1,
+  ticketWatchdogMinutes: 30,
 };
 
 /**
@@ -83,5 +95,28 @@ export async function effectiveSettings(): Promise<Required<AppSettings>> {
       stored.permissionMode === "bypassPermissions"
         ? stored.permissionMode
         : DEFAULT_SETTINGS.permissionMode,
+    maxConcurrentTickets: clampInt(
+      stored.maxConcurrentTickets,
+      1,
+      5,
+      DEFAULT_SETTINGS.maxConcurrentTickets,
+    ),
+    ticketWatchdogMinutes:
+      typeof stored.ticketWatchdogMinutes === "number"
+        ? stored.ticketWatchdogMinutes
+        : DEFAULT_SETTINGS.ticketWatchdogMinutes,
   };
+}
+
+function clampInt(
+  v: unknown,
+  min: number,
+  max: number,
+  fallback: number,
+): number {
+  if (typeof v !== "number" || !Number.isFinite(v)) return fallback;
+  const i = Math.round(v);
+  if (i < min) return min;
+  if (i > max) return max;
+  return i;
 }
